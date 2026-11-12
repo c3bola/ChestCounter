@@ -77,7 +77,7 @@ public static class Profiles
             var latest = validMatches.OrderByDescending(When).First();
             var name = validMatches.OrderByDescending(When).Select(m => m.PlayerName).FirstOrDefault(n => !string.IsNullOrWhiteSpace(n));
             var chests = validMatches.Sum(m => (c != null ? Adjust(m, c)! : m).ChestsOpened);
-            return new Profile(g.Key, name ?? L.T("Cuenta desconocida", "Unknown account"), validMatches.Count, chests, When(latest));
+            return new Profile(g.Key, name ?? L.T("profiles.unknown_account"), validMatches.Count, chests, When(latest));
         })
         .Where(p => p != null)
         .Select(p => p!)
@@ -85,6 +85,18 @@ public static class Profiles
         .ToList();
 
     private static DateTime When(MatchRecord m) => m.MatchStartUtc ?? m.AnalyzedAtUtc;
+
+    public static bool IsThisSession(MatchRecord match, DateTime sessionStartUtc)
+    {
+        var start = match.MatchStartUtc ?? match.AnalyzedAtUtc;
+        if (start.Kind == DateTimeKind.Unspecified)
+        {
+            start = DateTime.SpecifyKind(start, DateTimeKind.Utc);
+        }
+
+        var end = start.ToUniversalTime().AddSeconds(match.DurationSeconds ?? 0);
+        return end >= sessionStartUtc.AddMinutes(-2);
+    }
 
     /// <summary>The selected profile when it exists, else the most recently played one (null = no match yet).</summary>
     public static Profile? Current(TrackerData d, Config c)
@@ -128,5 +140,5 @@ public static class Profiles
     public static int InitialChests(TrackerData d, Config c) => InitialChests(c, Current(d, c)?.Key);
 
     public static string Describe(Profile p) =>
-        $"{p.Name}  ({L.Count(p.Matches, "partida", "partidas", "match", "matches")}, {L.Count(p.Chests, "cofre", "cofres", "chest", "chests")})";
+        $"{p.Name}  ({L.Count(p.Matches, "common.match", "common.matches")}, {L.Count(p.Chests, "common.chest", "common.chests")})";
 }

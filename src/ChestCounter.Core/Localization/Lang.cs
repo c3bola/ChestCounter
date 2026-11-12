@@ -3,16 +3,13 @@ using System.Globalization;
 namespace ChestCounter;
 
 /// <summary>
-/// Idioma de la aplicación. Por defecto el de Windows entre los soportados (ver <see cref="Supported"/>; si no es
-/// ninguno, inglés); se puede elegir otro en Ajustes. Los textos se escriben en línea: <c>L.T("español", "English")</c>; las traducciones
-/// a los demás idiomas están en <see cref="Translations"/>, indexadas por el texto español.
-/// Los nombres guardados en data.json (tipos de cofre, objetos del tesoro) siguen en francés por compatibilidad y se traducen al mostrarlos (<see cref="Name"/>).
+/// Idioma de la aplicación. Los textos visibles se resuelven desde <see cref="Translations"/> mediante claves.
+/// Los nombres guardados en data.json siguen en inglés por compatibilidad y se traducen al mostrarlos.
 /// </summary>
 public static class L
 {
     /// <summary>
-    /// Códigos de idioma soportados. Los dos primeros son el español (texto de origen) y el inglés; el resto
-    /// están en el mismo orden que las filas de <see cref="Translations"/>.
+    /// Códigos de idioma soportados, en el mismo orden que las columnas del catálogo.
     /// </summary>
     private static readonly string[] Supported = ["es", "en", "pt", "ru", "fr", "de", "it", "pl", "tr", "ja"];
 
@@ -30,19 +27,23 @@ public static class L
         ["ja"] = "ja-JP",
     };
 
-    /// <summary>Idiomas que se pueden elegir en Ajustes, con su nombre en ese mismo idioma.</summary>
-    public static IReadOnlyList<(string Code, string Name)> Languages { get; } =
+    private static readonly (string Code, string Key)[] LanguageKeys =
     [
-        ("es", "Español"), ("en", "English"), ("pt", "Português (Brasil)"), ("ru", "Русский"), ("fr", "Français"),
-        ("de", "Deutsch"), ("it", "Italiano"), ("pl", "Polski"), ("tr", "Türkçe"), ("ja", "日本語"),
+        ("es", "language.es"), ("en", "language.en"), ("pt", "language.pt"), ("ru", "language.ru"),
+        ("fr", "language.fr"), ("de", "language.de"), ("it", "language.it"), ("pl", "language.pl"),
+        ("tr", "language.tr"), ("ja", "language.ja"),
     ];
+
+    /// <summary>Idiomas que se pueden elegir en Ajustes, con su nombre nativo desde el catálogo.</summary>
+    public static IReadOnlyList<(string Code, string Name)> Languages =>
+        LanguageKeys.Select(language => (language.Code, T(language.Key))).ToArray();
 
     /// <summary>
     /// Código del idioma actual ("es", "en", "pt", "ru", "fr", "de", "it", "pl", "tr" o "ja").
-    /// Por defecto el de Windows; <see cref="Use"/> aplica el elegido en Ajustes. Para probar: la variable
+    /// Por defecto portugués de Brasil; <see cref="Use"/> aplica el elegido en Ajustes. Para probar: la variable
     /// CHESTCOUNTER_LANG fuerza el idioma por encima de todo.
     /// </summary>
-    public static string Code { get; private set; } = Detect();
+    public static string Code { get; private set; } = "pt";
 
     /// <summary>True cuando la interfaz va en inglés.</summary>
     public static bool En => Code == "en";
@@ -50,10 +51,9 @@ public static class L
     public static CultureInfo Culture { get; private set; } = CultureInfo.GetCultureInfo(Cultures[Code]);
 
     /// <summary>
-    /// Posición del idioma actual en las filas de <see cref="Translations"/>: 0 = pt … 7 = ja.
-    /// Vale -2 para español y -1 para inglés (esos textos ya están en el código).
+    /// Posición del idioma actual en las columnas del catálogo.
     /// </summary>
-    private static int Slot = Array.IndexOf(Supported, Code) - 2;
+    private static int Slot = Array.IndexOf(Supported, Code);
 
     /// <summary>Idioma de Windows (o el forzado con CHESTCOUNTER_LANG), sin tener en cuenta lo elegido en Ajustes.</summary>
     public static string SystemCode => Detect();
@@ -69,7 +69,7 @@ public static class L
             : code;
         Code = chosen;
         Culture = CultureInfo.GetCultureInfo(Cultures[chosen]);
-        Slot = Array.IndexOf(Supported, chosen) - 2;
+        Slot = Array.IndexOf(Supported, chosen);
     }
 
     private static string Detect()
@@ -81,73 +81,79 @@ public static class L
         return Array.IndexOf(Supported, code) >= 0 ? code : "en";
     }
 
-    /// <summary>Texto en el idioma actual: <paramref name="es"/> en español, <paramref name="en"/> en inglés y la traducción en los demás.</summary>
-    public static string T(string es, string en) => Pick(es, es, en);
+    /// <summary>Texto en el idioma actual, identificado por una clave del catálogo.</summary>
+    public static string T(string key) => Pick(key);
 
-    /// <summary>Texto largo, identificado por <paramref name="id"/> en <see cref="Translations"/> (clave "#id").</summary>
-    public static string Big(string id, string es, string en) => Pick("#" + id, es, en);
+    /// <summary>Texto con huecos {0}, {1}… (formato de <c>string.Format</c>), identificado por una clave del catálogo.</summary>
+    public static string F(string key, params object?[] args) => string.Format(Culture, T(key), args);
 
-    /// <summary>Texto con huecos {0}, {1}… (formato de <c>string.Format</c>), traducido como <see cref="T"/>.</summary>
-    public static string F(string es, string en, params object?[] args) => string.Format(Culture, T(es, en), args);
-
-    private static string Pick(string key, string es, string en)
+    private static string Pick(string key)
     {
-        if (Slot == -2)
+        if (!Translations.Table.TryGetValue(key, out var row))
         {
-            return es;
+            throw new InvalidOperationException($"Missing localization key '{key}'.");
         }
-        if (Slot == -1)
+        if (row.Length != Supported.Length || string.IsNullOrWhiteSpace(row[Slot]))
         {
-            return en;
+            throw new InvalidOperationException($"Incomplete localization key '{key}' for language '{Code}'.");
         }
-        return Translations.Table.TryGetValue(key, out var row) && row[Slot] is { Length: > 0 } text ? text : en;
+        return row[Slot];
     }
 
     public static string N(int n) => n.ToString("0", Culture);
 
     /// <summary>"3 cofres" / "1 chest" (plural según la cifra, en el idioma actual).</summary>
-    public static string Count(int n, string esOne, string esMany, string enOne, string enMany) =>
-        $"{N(n)} {(n == 1 ? T(esOne, enOne) : T(esMany, enMany))}";
+    public static string Count(int n, string oneKey, string manyKey) =>
+        $"{N(n)} {T(n == 1 ? oneKey : manyKey)}";
 
     /// <summary>"12.º" / "12th" / "12.".</summary>
     public static string Ordinal(int n) => Code switch
     {
-        "es" => $"{n}.º",
-        "pt" or "it" => $"{n}º",
-        "fr" => n == 1 ? "1er" : $"{n}e",
-        "ja" => $"{n}位",
-        "en" => n + EnglishSuffix(n),
-        _ => $"{n}.",
+        "es" => F("format.ordinal.es", n),
+        "pt" or "it" => F("format.ordinal.pt", n),
+        "fr" => n == 1 ? T("format.ordinal.fr.first") : F("format.ordinal.fr.other", n),
+        "ja" => F("format.ordinal.ja", n),
+        "en" => F("format.ordinal.en", n, EnglishSuffix(n)),
+        _ => F("format.ordinal.default", n),
     };
 
-    private static string EnglishSuffix(int n) =>
-        (n % 100) is 11 or 12 or 13 ? "th" : (n % 10) switch { 1 => "st", 2 => "nd", 3 => "rd", _ => "th" };
+    private static string EnglishSuffix(int n) => T((n % 100) is 11 or 12 or 13
+        ? "format.ordinal.suffix.th"
+        : (n % 10) switch
+        {
+            1 => "format.ordinal.suffix.st",
+            2 => "format.ordinal.suffix.nd",
+            3 => "format.ordinal.suffix.rd",
+            _ => "format.ordinal.suffix.th",
+        });
 
     /// <summary>Fecha corta + hora de una partida ("05/11 22:54" / "Nov 5 22:54").</summary>
     public static string DateTimeShort(DateTime d) => d.ToString(En ? "MMM d HH:mm" : "dd/MM HH:mm", Culture);
 
+    public static string HtmlLanguage => Code == "pt" ? "pt-BR" : Code;
+
     // Nombres internos guardados en data.json (en inglés) -> nombre mostrado.
-    private static readonly Dictionary<string, (string Es, string En)> Names = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly Dictionary<string, string> Names = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["Chest"] = ("Cofre", "Chest"),
-        ["Rare chest"] = ("Cofre raro", "Rare chest"),
-        ["Buried chest"] = ("Cofre enterrado", "Buried chest"),
-        ["Extraction / relic chest"] = ("Cofre de extracción / reliquias", "Extraction / relic chest"),
-        ["Spirit poster chest"] = ("Cofre de los carteles de espíritu", "Spirit poster chest"),
-        ["Other chest"] = ("Otro cofre", "Other chest"),
-        ["Loot cannon"] = ("Cañón de botín", "Loot cannon"),
-        ["Ammo box"] = ("Caja de munición", "Ammo box"),
-        ["Food box"] = ("Caja de comida", "Food box"),
-        ["Other container"] = ("Otro contenedor", "Other container"),
-        ["Treasure"] = ("Tesoro", "Treasure"),
-        ["Treasure (unknown type)"] = ("Tesoro (tipo desconocido)", "Treasure (unknown type)"),
-        ["Treasure gizmo"] = ("Artilugio de tesoro", "Treasure gizmo"),
-        ["Golden firework"] = ("Fuego artificial dorado", "Golden firework"),
-        ["Portable extractor"] = ("Extractor portátil", "Portable extractor"),
-        ["Spirit locator"] = ("Localizador de espíritu", "Spirit locator"),
-        ["Lucky locator"] = ("Localizador afortunado", "Lucky locator"),
-        ["Extraction accelerator"] = ("Acelerador de extracción", "Extraction accelerator"),
-        ["unknown"] = ("desconocido", "unknown"),
+        ["Chest"] = "items.chest",
+        ["Rare chest"] = "items.rare_chest",
+        ["Buried chest"] = "items.buried_chest",
+        ["Extraction / relic chest"] = "items.extraction_relic_chest",
+        ["Spirit poster chest"] = "items.spirit_poster_chest",
+        ["Other chest"] = "items.other_chest",
+        ["Loot cannon"] = "items.loot_cannon",
+        ["Ammo box"] = "items.ammo_box",
+        ["Food box"] = "items.food_box",
+        ["Other container"] = "items.other_container",
+        ["Treasure"] = "items.treasure",
+        ["Treasure (unknown type)"] = "items.treasure_unknown_type",
+        ["Treasure gizmo"] = "items.treasure_gizmo",
+        ["Golden firework"] = "items.golden_firework",
+        ["Portable extractor"] = "items.portable_extractor",
+        ["Spirit locator"] = "items.spirit_locator",
+        ["Lucky locator"] = "items.lucky_locator",
+        ["Extraction accelerator"] = "items.extraction_accelerator",
+        ["unknown"] = "items.unknown",
     };
 
     /// <summary>
@@ -187,6 +193,6 @@ public static class L
         {
             return stored ?? "";
         }
-        return Names.TryGetValue(Upgrade(stored), out var pair) ? T(pair.Es, pair.En) : stored;
+        return Names.TryGetValue(Upgrade(stored), out var key) ? T(key) : stored;
     }
 }

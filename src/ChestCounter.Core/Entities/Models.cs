@@ -1,4 +1,3 @@
-using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace ChestCounter;
@@ -13,7 +12,6 @@ public sealed class ChestRecord
     public List<string> Items { get; set; } = new();
     public List<string> TreasureItems { get; set; } = new();
 }
-
 public sealed class TreasureFind
 {
     /// <summary>Name to display (re-resolved from treasures.json so renaming updates old matches).</summary>
@@ -31,7 +29,7 @@ public sealed class TreasureFind
     public bool TimeExact { get; set; }
     /// <summary>True when the source chest was destroyed rather than opened.</summary>
     public bool SourceDestroyed { get; set; }
-    public string SourceLabel => SourceDestroyed ? $"{L.Name(SourceKind)} ({L.T("destruido", "destroyed")})" : L.Name(SourceKind);
+    public string SourceLabel => SourceDestroyed ? L.F("model.destroyed_source", L.Name(SourceKind)) : L.Name(SourceKind);
     /// <summary>When it was obtained (replay seconds). Exact for golden chests, estimated otherwise.</summary>
     public float? ObtainedAtSeconds { get; set; }
     /// <summary>Kind of container / interaction it came from (Chest, Loot cannon...).</summary>
@@ -130,12 +128,15 @@ public sealed class MatchRecord
 
 public sealed class Config
 {
+    public const int DefaultObsPort = 7373;
+
     /// <summary>
-    /// Language chosen in Settings ("es", "en"…); null = the Windows language. Saved under a new name: the old key
-    /// held "es" for everyone and would force Spanish.
+    /// Language chosen in Settings ("es", "en"…); defaults to Brazilian Portuguese, null = the Windows language.
+    /// Saved under a new name: the old key held "es" for everyone and would force Spanish.
     /// </summary>
     [JsonPropertyName("UiLanguage")]
-    public string? Language { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.Never)]
+    public string? Language { get; set; } = "pt";
 
     /// <summary>Selected profile (Epic id or name of the account the player plays on); null = most recent one.</summary>
     public string? Profile { get; set; }
@@ -158,6 +159,8 @@ public sealed class Config
     public bool OpenReportOnStart { get; set; }
     public int? OverlayX { get; set; }
     public int? OverlayY { get; set; }
+    /// <summary>Overlay size as a percentage of the original window size.</summary>
+    public int OverlayScalePercent { get; set; } = OverlayScale.Default;
     /// <summary>Locked overlay = click-through, cannot be moved (Ctrl+Shift+L to toggle).</summary>
     public bool OverlayLocked { get; set; }
 
@@ -171,7 +174,7 @@ public sealed class Config
     public int LiveIntervalSeconds { get; set; } = 30;
 
     /// <summary>Port of the local OBS page (http://localhost:port/), served while the tool is open.</summary>
-    public int ObsPort { get; set; } = ObsServer.DefaultPort;
+    public int ObsPort { get; set; } = DefaultObsPort;
 
     /// <summary>
     /// Estimate of the chests opened before using the tool, per profile key ("" = no profile yet).
@@ -280,168 +283,4 @@ public sealed class TrackerData
 
     /// <summary>Key = file name|size|last write ticks. Value = session id, "skipped" or "error: ...".</summary>
     public Dictionary<string, string> ProcessedFiles { get; set; } = new();
-}
-
-/// <summary>Reads/writes JSON files atomically in the data folder.</summary>
-public sealed class Store
-{
-    private static readonly JsonSerializerOptions Json = new()
-    {
-        WriteIndented = true,
-        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-    };
-
-    public string Folder { get; }
-
-    /// <summary>
-    /// %APPDATA%\ChestCounter. The tool was called ChestTracker before version 1.1: its folder is moved
-    /// (history, settings and treasure names are kept).
-    /// </summary>
-    public static string DefaultFolder()
-    {
-        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        var folder = Path.Combine(appData, "ChestCounter");
-        var old = Path.Combine(appData, "ChestTracker");
-        try
-        {
-            if (!Directory.Exists(folder) && File.Exists(Path.Combine(old, "data.json")))
-            {
-                Directory.Move(old, folder);
-            }
-        }
-        catch
-        {
-            // the old folder is in use (old version still running): start fresh, nothing is lost
-        }
-        return folder;
-    }
-
-    public string ConfigPath => Path.Combine(Folder, "config.json");
-
-    public string DataPath => Path.Combine(Folder, "data.json");
-    public string ReportPath => Path.Combine(Folder, "report.html");
-    public string OverlayPath => Path.Combine(Folder, "overlay.html");
-    public string CsvPath => Path.Combine(Folder, "matches.csv");
-    public string PrizeNamesPath => Path.Combine(Folder, "treasures.json");
-    public string ErrorLogPath => Path.Combine(Folder, "errors.log");
-
-    /// <summary>Premios conocidos de la caza del tesoro (semana 1). Los ids nuevos se añaden solos con un nombre vacío.</summary>
-    public static Dictionary<string, string> DefaultPrizeNames => L.Code != "es"
-        ? new()
-        {
-            ["DelilahPrize:dpid_item1"] = "A$AP Rocky solid gold gauntlets (pickaxe) ?",
-            ["DelilahPrize:dpid_item2"] = "Plunder in Paradise (loading screen)",
-            ["DelilahPrize:dpid_item3"] = "Mercedes-AMG G 63 (vehicle) ?",
-            ["DelilahPrize:dpid_item4"] = "No Trespassing (music track)",
-        }
-        : new()
-        {
-            ["DelilahPrize:dpid_item1"] = "Guanteletes de A$AP Rocky de oro macizo (pico) ?",
-            ["DelilahPrize:dpid_item2"] = "Plunder in Paradise (pantalla de carga)",
-            ["DelilahPrize:dpid_item3"] = "Mercedes-AMG G 63 (vehículo) ?",
-            ["DelilahPrize:dpid_item4"] = "No Trespassing (pista musical)",
-        };
-
-    public void LoadPrizeNames()
-    {
-        var names = Load<Dictionary<string, string>>(PrizeNamesPath);
-        if (names == null)
-        {
-            names = DefaultPrizeNames;
-            Save(PrizeNamesPath, names);
-        }
-
-        TreasureNames.PrizeNames.Clear();
-        foreach (var kv in names)
-        {
-            TreasureNames.PrizeNames[kv.Key] = kv.Value;
-        }
-    }
-
-    /// <summary>Adds unknown prize ids to treasures.json so the user can name them. Returns the new ids.</summary>
-    public List<string> RegisterPrizeIds(IEnumerable<string> ids)
-    {
-        var added = ids.Where(id => !TreasureNames.PrizeNames.ContainsKey(id)).Distinct().ToList();
-        if (added.Count == 0)
-        {
-            return added;
-        }
-
-        var names = Load<Dictionary<string, string>>(PrizeNamesPath) ?? DefaultPrizeNames;
-        foreach (var id in added)
-        {
-            names[id] = "";
-            TreasureNames.PrizeNames[id] = "";
-        }
-        Save(PrizeNamesPath, names);
-        return added;
-    }
-
-    public Store(string folder)
-    {
-        Folder = folder;
-        Directory.CreateDirectory(folder);
-        MigrateFileNames();
-    }
-
-    /// <summary>Versions before 1.1 used other file names: keep the user's treasure names, drop the old generated pages.</summary>
-    private void MigrateFileNames()
-    {
-        try
-        {
-            var oldPrizes = Path.Combine(Folder, "tresors.json");
-            if (File.Exists(oldPrizes) && !File.Exists(PrizeNamesPath))
-            {
-                File.Move(oldPrizes, PrizeNamesPath);
-            }
-            foreach (var generated in new[] { "rapport.html", "parties.csv" })
-            {
-                var path = Path.Combine(Folder, generated);
-                if (File.Exists(path))
-                {
-                    File.Delete(path); // regenerated as report.html / matches.csv
-                }
-            }
-        }
-        catch
-        {
-            // not critical: the old files simply stay there
-        }
-    }
-
-    public Config? LoadConfig() => Load<Config>(ConfigPath);
-    public void SaveConfig(Config config) => Save(ConfigPath, config);
-    /// <summary>A new history starts at the current analysis version (nothing to re-analyze).</summary>
-    public TrackerData LoadData() => Load<TrackerData>(DataPath) ?? new TrackerData { AnalyzerVersion = ReplayAnalyzer.CurrentVersion };
-    public void SaveData(TrackerData data) => Save(DataPath, data);
-
-    private static T? Load<T>(string path) where T : class
-    {
-        if (!File.Exists(path))
-        {
-            return null;
-        }
-
-        try
-        {
-            return JsonSerializer.Deserialize<T>(File.ReadAllText(path), Json);
-        }
-        catch (Exception ex)
-        {
-            // Keep a copy of the unreadable file rather than silently losing the history.
-            var backup = path + $".corrupt-{DateTime.Now:yyyyMMdd-HHmmss}";
-            File.Copy(path, backup, overwrite: true);
-            ErrorLog.Write($"Archivo ilegible: {path}", ex);
-
-            return null;
-        }
-    }
-
-    private static void Save<T>(string path, T value)
-    {
-        var tmp = path + ".tmp";
-        File.WriteAllText(tmp, JsonSerializer.Serialize(value, Json));
-        File.Move(tmp, path, overwrite: true);
-    }
 }

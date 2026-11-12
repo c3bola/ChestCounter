@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>ChestCounter.Core</AssemblyName>
+    <RootNamespace>ChestCounter</RootNamespace>
+  </PropertyGroup>
+</Project>
