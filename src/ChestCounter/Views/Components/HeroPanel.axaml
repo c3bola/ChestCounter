@@ -1,0 +1,31 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="ChestCounter.HeroPanel">
+  <Border Classes="dashboard-card" BorderBrush="{StaticResource BrandGradient}" BorderThickness="2.5"
+          MinHeight="150" Padding="10">
+    <Grid ColumnDefinitions="1.22*,1.16*,1,1.22*" ColumnSpacing="8">
+      <Image Source="avares://ContadorDeBau/Assets/chest-dashboard.png" Stretch="Uniform"
+             MaxHeight="136" Margin="0,2" />
+      <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="1">
+        <Viewbox Stretch="Uniform" StretchDirection="DownOnly" MaxHeight="64">
+          <TextBlock Text="{Binding HeroTotal}" FontSize="56" FontWeight="Black" />
+        </Viewbox>
+        <TextBlock Text="{Binding TotalCaption}" FontSize="14" TextWrapping="Wrap" TextAlignment="Center" />
+        <TextBlock Text="{Binding SessionLine}" Foreground="{StaticResource Green}" FontSize="14"
+                   FontWeight="Bold" TextWrapping="Wrap" TextAlignment="Center" />
+      </StackPanel>
+      <Border Grid.Column="2" Background="{StaticResource SecondaryText}" Width="1" Margin="0,12" />
+      <StackPanel Grid.Column="3" VerticalAlignment="Center" Spacing="2">
+        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="6">
+          <Path Data="M5 8 C7 6 9 6 11 7 H17 C20 7 21 9 21 12 L20 17 C19 20 17 20 15 17 H9 C7 20 5 20 4 17 L3 12 C3 10 4 8 5 8 Z M7 10 V14 M5 12 H9 M16 10 H16.1 M18 13 H18.1"
+                Stroke="{StaticResource Green}" StrokeThickness="2" Width="36" Height="30" Stretch="Uniform" />
+          <Viewbox Grid.Column="1" Stretch="Uniform" StretchDirection="DownOnly" MaxHeight="64">
+            <TextBlock Text="{Binding HeroCurrent}" Foreground="{StaticResource Cyan}"
+                       FontSize="52" FontWeight="Black" />
+          </Viewbox>
+        </Grid>
+        <TextBlock Text="{Binding HeroCurrentCaption}" FontSize="14" TextWrapping="Wrap" TextAlignment="Center" />
+      </StackPanel>
+    </Grid>
+  </Border>
+</UserControl>

@@ -1,0 +1,32 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="using:ChestCounter"
+        x:Class="ChestCounter.MainWindow"
+        Title="{Binding WindowTitle}"
+        Width="1024" Height="768" MinWidth="580" MinHeight="480"
+        WindowDecorations="BorderOnly"
+        Background="{StaticResource WindowBackground}"
+        WindowStartupLocation="CenterScreen">
+  <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+    <StackPanel Margin="14,0,14,18" Spacing="12">
+      <local:DashboardHeader />
+      <Grid x:Name="DashboardColumns" ColumnDefinitions="1.03*,1*" RowDefinitions="Auto"
+            ColumnSpacing="14" RowSpacing="12" SizeChanged="OnDashboardSizeChanged">
+        <StackPanel x:Name="MainPanels" Grid.Column="0" Spacing="10">
+          <local:HeroPanel />
+          <local:LastMatchPanel />
+          <local:WeeklyChart />
+        </StackPanel>
+        <local:StatisticsPanel x:Name="Statistics" Grid.Column="1" />
+      </Grid>
+      <local:TeamPanel />
+      <Border Classes="dashboard-card" IsVisible="{Binding HasNotice}" Padding="12">
+        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+          <TextBlock Text="{Binding Notice}" Foreground="{StaticResource Cyan}" TextWrapping="Wrap" VerticalAlignment="Center" />
+          <Button Grid.Column="1" IsVisible="{Binding ShowKeepOpen}" Command="{Binding KeepOpenCommand}"
+                  Content="{Binding KeepOpenText}" />
+        </Grid>
+      </Border>
+    </StackPanel>
+  </ScrollViewer>
+</Window>

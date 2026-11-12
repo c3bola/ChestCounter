@@ -1,0 +1,140 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="using:ChestCounter"
+        x:Class="ChestCounter.SettingsWindow"
+        Title="{Binding WindowTitle}"
+        Width="680" Height="700" MinWidth="580" MinHeight="560"
+        Background="{StaticResource WindowBackground}"
+        WindowStartupLocation="CenterOwner">
+  <Grid RowDefinitions="Auto,*,Auto" Margin="18">
+    <Grid ColumnDefinitions="*,Auto,Auto" Margin="0,0,0,12">
+      <TextBlock Text="{Binding WindowTitle}" FontSize="20" FontWeight="Bold" />
+      <TextBlock Grid.Column="1" Text="{Binding VersionText}" Foreground="{StaticResource SecondaryText}"
+                 VerticalAlignment="Center" Margin="0,0,14,0" />
+      <ComboBox Grid.Column="2" ItemsSource="{Binding Languages}" SelectedItem="{Binding Language}" MinWidth="170">
+        <ComboBox.ItemTemplate>
+          <DataTemplate><TextBlock Text="{Binding Text}" /></DataTemplate>
+        </ComboBox.ItemTemplate>
+      </ComboBox>
+    </Grid>
+    <ScrollViewer Grid.Row="1">
+      <StackPanel Spacing="12">
+        <Border Background="{StaticResource CardBackground}" CornerRadius="14" Padding="14">
+          <StackPanel Spacing="7">
+            <TextBlock Text="{Binding OptionsTitle}" FontSize="15" FontWeight="Bold" />
+            <CheckBox Content="{Binding OpenWithFortniteLabel}" IsChecked="{Binding StartWithFortnite}" />
+            <TextBlock Text="{Binding OpenWithFortniteHint}" Foreground="{StaticResource SecondaryText}" FontSize="11" Margin="4,-6,0,0" />
+            <CheckBox Content="{Binding OpenReportLabel}" IsChecked="{Binding OpenReportOnStart}" />
+            <CheckBox Content="{Binding TeammatesLabel}" IsChecked="{Binding ShowTeammates}" />
+            <CheckBox Content="{Binding CountTeammatesLabel}" IsChecked="{Binding CountTeammates}" />
+          </StackPanel>
+        </Border>
+        <Border Background="{StaticResource CardBackground}" CornerRadius="14" Padding="14">
+          <StackPanel Spacing="7">
+            <TextBlock Text="{Binding CountOptionsTitle}" FontSize="15" FontWeight="Bold" />
+            <CheckBox Content="{Binding AmmoBoxesLabel}" IsChecked="{Binding CountAmmoBoxes}" />
+            <CheckBox Content="{Binding FoodBoxesLabel}" IsChecked="{Binding CountFoodBoxes}" />
+            <CheckBox Content="{Binding LootCannonsLabel}" IsChecked="{Binding CountLootCannons}" />
+          </StackPanel>
+        </Border>
+        <Border Background="{StaticResource CardBackground}" CornerRadius="14" Padding="14">
+          <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="8">
+            <TextBlock Text="{Binding ReplaysFolderLabel}" FontSize="15" FontWeight="Bold" />
+            <Button Grid.Column="1" Content="{Binding ChangeLabel}" Command="{Binding ChooseFolderCommand}" />
+            <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="{Binding DemosFolder}" TextWrapping="Wrap" Foreground="{StaticResource SecondaryText}" />
+            <TextBlock Grid.Row="2" Grid.ColumnSpan="2" Text="{Binding DataFolderLabel}" TextWrapping="Wrap" Foreground="{StaticResource SecondaryText}" />
+          </Grid>
+        </Border>
+        <Border Background="{StaticResource CardBackground}" CornerRadius="14" Padding="14">
+          <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto" RowSpacing="8">
+            <TextBlock Text="{Binding InitialChestsLabel}" FontSize="15" FontWeight="Bold" />
+            <TextBox Grid.Row="1" Text="{Binding InitialChests}" MaxLength="7" />
+            <StackPanel Grid.Row="1" Grid.Column="1" Spacing="4" Margin="8,0,0,0">
+              <Button Content="+" Command="{Binding AddTenCommand}" MinWidth="38" />
+              <Button Content="−" Command="{Binding SubtractTenCommand}" MinWidth="38" />
+            </StackPanel>
+            <TextBlock Grid.Row="2" Grid.ColumnSpan="2" Text="{Binding ProfileEstimateLabel}"
+                       Foreground="{StaticResource SecondaryText}" TextWrapping="Wrap" />
+          </Grid>
+        </Border>
+        <Border Background="{StaticResource CardBackground}" CornerRadius="14" Padding="14">
+          <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto" RowSpacing="8">
+            <TextBlock Text="{Binding UpdatesLabel}" FontSize="15" FontWeight="Bold" />
+            <ComboBox Grid.Row="1" Grid.ColumnSpan="2" ItemsSource="{Binding UpdateModes}" SelectedItem="{Binding UpdateMode}">
+              <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Text}" /></DataTemplate></ComboBox.ItemTemplate>
+            </ComboBox>
+          </Grid>
+        </Border>
+        <Border Background="{StaticResource CardBackground}" CornerRadius="14" Padding="14">
+          <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto" RowSpacing="8">
+            <TextBlock Text="{Binding ObsLabel}" FontSize="15" FontWeight="Bold" />
+            <TextBlock Grid.Column="1" Text="{Binding ObsStatus}" Foreground="{StaticResource Cyan}" />
+            <TextBox Grid.Row="1" Text="{Binding ObsUrl}" IsReadOnly="True" />
+            <Button Grid.Row="1" Grid.Column="1" Content="{Binding CopyLabel}" Command="{Binding CopyObsCommand}"
+                    IsEnabled="{Binding CanCopyObsUrl}" Margin="8,0,0,0" />
+          </Grid>
+        </Border>
+        <Border Background="{StaticResource CardBackground}" CornerRadius="14" Padding="14">
+          <StackPanel Spacing="5">
+            <TextBlock Text="{Binding OverlayShortcutsTitle}" FontSize="15" FontWeight="Bold" />
+            <TextBlock Text="{Binding OverlayShortcutsText}" Foreground="{StaticResource SecondaryText}" TextWrapping="Wrap" />
+            <Button Content="{Binding OverlayToggleLockLabel}" Command="{Binding ToggleOverlayLockCommand}" HorizontalAlignment="Left" />
+            <TextBlock Text="{Binding OverlayScaleLabel}" FontWeight="Bold" Margin="0,8,0,0" />
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+              <Slider Minimum="50" Maximum="100" TickFrequency="10" IsSnapToTickEnabled="True"
+                      Value="{Binding OverlayScaleValue, Mode=TwoWay}" />
+              <TextBlock Grid.Column="1" Text="{Binding OverlayScaleText}" VerticalAlignment="Center" />
+            </Grid>
+            <Button Content="{Binding OverlayDefaultLabel}" Command="{Binding ResetOverlayScaleCommand}" HorizontalAlignment="Left" />
+            <TextBlock Text="{Binding OverlayPreviewLabel}" Foreground="{StaticResource SecondaryText}" />
+            <Viewbox Stretch="Uniform" StretchDirection="DownOnly" HorizontalAlignment="Left">
+              <Border Width="{Binding OverlayPreviewWidth}" Height="{Binding OverlayPreviewHeight}">
+                <Viewbox Stretch="Uniform">
+                  <local:OverlayVisual x:Name="OverlayPreview" />
+                </Viewbox>
+              </Border>
+            </Viewbox>
+          </StackPanel>
+        </Border>
+        <Border Background="{StaticResource CardBackground}" CornerRadius="14" Padding="14">
+          <StackPanel Spacing="8">
+            <TextBlock Text="{Binding SocialTitle}" VerticalAlignment="Center" />
+            <WrapPanel Orientation="Horizontal">
+              <Button Content="Telegram" Command="{Binding OpenTelegramCommand}" Margin="0,0,8,8" />
+              <Button Command="{Binding OpenXCommand}" Margin="0,0,8,8">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                  <Image Source="avares://ContadorDeBau/Assets/social-twitter.png" Width="20" Height="20" Stretch="Uniform" />
+                  <TextBlock Text="X" VerticalAlignment="Center" />
+                </StackPanel>
+              </Button>
+              <Button Command="{Binding OpenYouTubeCommand}" Margin="0,0,8,8">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                  <Image Source="avares://ContadorDeBau/Assets/social-youtube.png" Width="20" Height="20" Stretch="Uniform" />
+                  <TextBlock Text="YouTube" VerticalAlignment="Center" />
+                </StackPanel>
+              </Button>
+              <Button Command="{Binding OpenTikTokCommand}" Margin="0,0,8,8">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                  <Image Source="avares://ContadorDeBau/Assets/social-tiktok.png" Width="20" Height="20" Stretch="Uniform" />
+                  <TextBlock Text="TikTok" VerticalAlignment="Center" />
+                </StackPanel>
+              </Button>
+              <Button Command="{Binding OpenGitHubCommand}" Margin="0,0,8,8">
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                  <Image Source="avares://ContadorDeBau/Assets/social-github.png" Width="20" Height="20" Stretch="Uniform" />
+                  <TextBlock Text="GitHub — ChestCounter" VerticalAlignment="Center" />
+                </StackPanel>
+              </Button>
+            </WrapPanel>
+          </StackPanel>
+        </Border>
+        <TextBlock Text="{Binding Status}" Foreground="{StaticResource Cyan}" TextWrapping="Wrap" />
+      </StackPanel>
+    </ScrollViewer>
+    <Grid Grid.Row="2" ColumnDefinitions="*,Auto" Margin="0,12,0,0">
+      <Button Content="{Binding ResetLabel}" Command="{Binding ResetStatsCommand}" HorizontalAlignment="Left"
+              Foreground="#FF6363" />
+      <Button Grid.Column="1" Content="{Binding CloseLabel}" Click="OnCloseClicked" MinWidth="130" />
+    </Grid>
+  </Grid>
+</Window>

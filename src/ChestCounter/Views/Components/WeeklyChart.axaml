@@ -1,0 +1,41 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:primitives="using:Avalonia.Controls.Primitives"
+             x:Class="ChestCounter.WeeklyChart">
+  <UserControl.Styles>
+    <Style Selector="Border.chart-bar">
+      <Setter Property="Background" Value="{StaticResource GreenBar}" />
+    </Style>
+    <Style Selector="Border.chart-bar.peak">
+      <Setter Property="Background" Value="{StaticResource BlueBar}" />
+    </Style>
+  </UserControl.Styles>
+  <Border Classes="dashboard-card" MinHeight="156" Padding="20,9">
+    <Grid RowDefinitions="Auto,*">
+      <StackPanel Orientation="Horizontal" Spacing="12">
+        <Path Data="M3 20 V13 H8 V20 Z M10 20 V8 H15 V20 Z M17 20 V3 H22 V20 Z"
+              Fill="{StaticResource Cyan}" Width="28" Height="28" Stretch="Uniform" />
+        <TextBlock Text="{Binding HistoryTitle}" FontSize="16" VerticalAlignment="Center" />
+      </StackPanel>
+      <ItemsControl Grid.Row="1" ItemsSource="{Binding Days}" Margin="0,2,0,0">
+        <ItemsControl.ItemsPanel>
+          <ItemsPanelTemplate><primitives:UniformGrid Columns="7" /></ItemsPanelTemplate>
+        </ItemsControl.ItemsPanel>
+        <ItemsControl.ItemTemplate>
+          <DataTemplate>
+            <Grid RowDefinitions="*,1,Auto" Margin="4,0">
+              <StackPanel VerticalAlignment="Bottom" HorizontalAlignment="Stretch">
+                <TextBlock Text="{Binding Value}" HorizontalAlignment="Center" FontSize="16" FontWeight="Bold" />
+                <Border Classes="chart-bar" Classes.peak="{Binding IsPeak}" Height="{Binding BarHeight}"
+                        CornerRadius="8,8,3,3" Margin="1,2,1,0" />
+              </StackPanel>
+              <Border Grid.Row="1" Background="{StaticResource SecondaryText}" />
+              <TextBlock Grid.Row="2" Text="{Binding Name}" HorizontalAlignment="Center"
+                         FontSize="14" Margin="0,3,0,0" />
+            </Grid>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+    </Grid>
+  </Border>
+</UserControl>

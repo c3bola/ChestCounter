@@ -1,0 +1,55 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:fluent="using:Avalonia.Themes.Fluent"
+             x:Class="ChestCounter.App"
+             RequestedThemeVariant="Dark">
+  <Application.Resources>
+    <FontFamily x:Key="BrandFont">avares://ContadorDeBau/Assets/burbarkfont.ttf#Burbank Big Condensed</FontFamily>
+    <SolidColorBrush x:Key="WindowBackground" Color="#0B0E12" />
+    <SolidColorBrush x:Key="CardBackground" Color="#20252B" />
+    <SolidColorBrush x:Key="PanelBackground" Color="#171C22" />
+    <SolidColorBrush x:Key="CardBorder" Color="#414850" />
+    <SolidColorBrush x:Key="PrimaryText" Color="#F5F7FA" />
+    <SolidColorBrush x:Key="SecondaryText" Color="#C4CAD1" />
+    <SolidColorBrush x:Key="Cyan" Color="#00C8F5" />
+    <SolidColorBrush x:Key="Green" Color="#28E66B" />
+    <SolidColorBrush x:Key="Blue" Color="#087BFF" />
+    <SolidColorBrush x:Key="Amber" Color="#FFB84D" />
+    <SolidColorBrush x:Key="Rose" Color="#FF80AA" />
+    <LinearGradientBrush x:Key="BrandGradient" StartPoint="0%,50%" EndPoint="100%,50%">
+      <GradientStop Color="#27E65A" Offset="0" />
+      <GradientStop Color="#00C9DB" Offset="0.62" />
+      <GradientStop Color="#0878FF" Offset="1" />
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="GreenBar" StartPoint="0%,0%" EndPoint="0%,100%">
+      <GradientStop Color="#58F177" Offset="0" />
+      <GradientStop Color="#0DCB70" Offset="1" />
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="BlueBar" StartPoint="0%,0%" EndPoint="0%,100%">
+      <GradientStop Color="#08C7F3" Offset="0" />
+      <GradientStop Color="#0875F5" Offset="1" />
+    </LinearGradientBrush>
+  </Application.Resources>
+  <Application.Styles>
+    <fluent:FluentTheme />
+    <Style Selector=":is(Window)">
+      <Setter Property="Foreground" Value="{StaticResource PrimaryText}" />
+    </Style>
+    <Style Selector="Border.dashboard-card">
+      <Setter Property="Background" Value="{StaticResource CardBackground}" />
+      <Setter Property="BorderBrush" Value="{StaticResource CardBorder}" />
+      <Setter Property="BorderThickness" Value="1.5" />
+      <Setter Property="CornerRadius" Value="18" />
+    </Style>
+    <Style Selector="Button.dashboard-action">
+      <Setter Property="Background" Value="{StaticResource CardBackground}" />
+      <Setter Property="BorderBrush" Value="{StaticResource CardBorder}" />
+      <Setter Property="BorderThickness" Value="1.5" />
+      <Setter Property="CornerRadius" Value="16" />
+      <Setter Property="Padding" Value="10,8" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+      <Setter Property="FontWeight" Value="Bold" />
+    </Style>
+  </Application.Styles>
+</Application>

@@ -1,0 +1,19 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="ChestCounter.InfoDialogWindow"
+Title="{Binding DialogTitle}"
+        Width="480" MinWidth="360" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        Background="{StaticResource WindowBackground}">
+  <StackPanel Margin="22" Spacing="16">
+    <TextBlock Text="{Binding DialogTitle}" FontSize="18" FontWeight="Bold" />
+    <TextBlock Text="{Binding Message}" TextWrapping="Wrap" />
+    <TextBlock Text="{Binding Details}" Foreground="{StaticResource SecondaryText}" TextWrapping="Wrap"
+               IsVisible="{Binding HasDetails}" />
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+      <Button x:Name="CancelButton" Content="{Binding CancelText}" Click="OnCancelClicked" />
+      <Button Content="{Binding AcceptText}" Click="OnAcceptClicked" MinWidth="100"
+              Background="{StaticResource Cyan}" Foreground="#071218" />
+    </StackPanel>
+  </StackPanel>
+</Window>

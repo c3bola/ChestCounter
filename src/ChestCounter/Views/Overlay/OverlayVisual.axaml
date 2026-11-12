@@ -1,0 +1,69 @@
+<Canvas xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="ChestCounter.OverlayVisual" Width="1120" Height="530" ClipToBounds="True">
+    <Border Canvas.Left="0" Canvas.Top="0" Width="1120" Height="305" CornerRadius="72"
+            BorderThickness="8">
+      <Border.BorderBrush>
+        <LinearGradientBrush StartPoint="0%,50%" EndPoint="100%,50%">
+          <GradientStop Color="#44FF00" Offset="0" />
+          <GradientStop Color="#00F4C4" Offset="0.5" />
+          <GradientStop Color="#0086FF" Offset="1" />
+        </LinearGradientBrush>
+      </Border.BorderBrush>
+      <Border.Background>
+        <LinearGradientBrush StartPoint="0%,0%" EndPoint="100%,100%">
+          <GradientStop Color="#153D15" Offset="0" />
+          <GradientStop Color="#002D34" Offset="0.5" />
+          <GradientStop Color="#06172F" Offset="1" />
+        </LinearGradientBrush>
+      </Border.Background>
+      <Canvas ClipToBounds="True">
+        <Image x:Name="ChestImage" Canvas.Left="45" Canvas.Top="36" Width="265" Height="220"
+               Stretch="Uniform" />
+        <Border Canvas.Left="336" Canvas.Top="50" Width="4" Height="192"
+                Background="#D2E8DA" CornerRadius="2" />
+        <Image x:Name="LogoImage" Canvas.Left="890" Canvas.Top="45" Width="175" Height="190" Opacity="0.12"
+               Stretch="Uniform" />
+        <Path Canvas.Left="827" Canvas.Top="233" Data="M0,60 L55,0 L78,0 L23,60 Z M37,60 L92,0 L115,0 L60,60 Z"
+              Fill="#29A6C8" Opacity="0.6" />
+        <Viewbox Canvas.Left="365" Canvas.Top="42" Width="520" Height="52" Stretch="Uniform" StretchDirection="DownOnly">
+          <TextBlock x:Name="ChestCaption" FontFamily="{StaticResource BrandFont}" FontSize="54"
+                     FontWeight="Black" Foreground="White" />
+        </Viewbox>
+        <Viewbox Canvas.Left="365" Canvas.Top="99" Width="520" Height="145" Stretch="Uniform" StretchDirection="DownOnly">
+          <TextBlock x:Name="ChestValue" FontFamily="{StaticResource BrandFont}" FontSize="152"
+                     FontWeight="Black" Foreground="White" />
+        </Viewbox>
+      </Canvas>
+    </Border>
+    <Border Canvas.Left="8" Canvas.Top="320" Width="1050" Height="210" CornerRadius="62"
+            BorderThickness="8" BorderBrush="#FFD323">
+      <Border.Background>
+        <LinearGradientBrush StartPoint="0%,0%" EndPoint="100%,100%">
+          <GradientStop Color="#27261A" Offset="0" />
+          <GradientStop Color="#191B17" Offset="0.65" />
+          <GradientStop Color="#3B2E09" Offset="1" />
+        </LinearGradientBrush>
+      </Border.Background>
+      <Canvas ClipToBounds="True">
+        <Image x:Name="FireworksImage" Canvas.Left="54" Canvas.Top="18" Width="150" Height="160"
+               Stretch="Uniform" />
+        <Image x:Name="ExtractorImage" Canvas.Left="224" Canvas.Top="15" Width="110" Height="165"
+               Stretch="Uniform" />
+        <Image x:Name="LocatorImage" Canvas.Left="359" Canvas.Top="20" Width="150" Height="150"
+               Stretch="Uniform" />
+        <Border Canvas.Left="540" Canvas.Top="25" Width="4" Height="140"
+                Background="#FFD323" CornerRadius="2" />
+        <Path Canvas.Left="879" Canvas.Top="110" Data="M0,85 L80,0 L104,0 L24,85 Z M38,85 L118,0 L142,0 L62,85 Z"
+              Fill="#C29200" Opacity="0.65" />
+        <Viewbox Canvas.Left="580" Canvas.Top="18" Width="365" Height="48" Stretch="Uniform" StretchDirection="DownOnly">
+          <TextBlock x:Name="TreasureCaption" FontFamily="{StaticResource BrandFont}" FontSize="52"
+                     FontWeight="Black" Foreground="#FFD323" />
+        </Viewbox>
+        <Viewbox Canvas.Left="580" Canvas.Top="65" Width="365" Height="110" Stretch="Uniform" StretchDirection="DownOnly">
+          <TextBlock x:Name="TreasureValue" FontFamily="{StaticResource BrandFont}" FontSize="120"
+                     FontWeight="Black" Foreground="White" />
+        </Viewbox>
+      </Canvas>
+    </Border>
+</Canvas>

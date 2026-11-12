@@ -1,26 +1,34 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <!-- Windows app: the standby process has no window; the tool opens its own console (NativeConsole). -->
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
-    <UseWindowsForms>true</UseWindowsForms>
     <ApplicationIcon>app.ico</ApplicationIcon>
-    <AssemblyName>ChestCounter</AssemblyName>
+    <AssemblyName>ContadorDeBau</AssemblyName>
     <RootNamespace>ChestCounter</RootNamespace>
-    <Version>2.0.24</Version>
+    <Version>3.0.0</Version>
     <InvariantGlobalization>false</InvariantGlobalization>
-    <!-- Single-file publish: the parser discovers its types by reflection, so no trimming. -->
     <PublishTrimmed>false</PublishTrimmed>
-    <!-- Small idle footprint: workstation, non-concurrent GC (no background GC thread) and a GC that gives memory back. -->
     <ServerGarbageCollection>false</ServerGarbageCollection>
     <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
     <TieredPGO>true</TieredPGO>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
   </PropertyGroup>
   <ItemGroup>
-    <!-- Logos de redes para el pie de Ajustes (PNG en el propio ejecutable). -->
-    <EmbeddedResource Include="Assets\social-*.png" LogicalName="ChestCounter.Assets.%(Filename).png" />
-  </ItemGroup>
-  <ItemGroup>
-    <ProjectReference Include="..\..\lib\FortniteReplayReader\FortniteReplayReader.csproj" />
+    <PackageReference Include="Avalonia" Version="12.1.6" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.6" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.6" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <ProjectReference Include="..\ChestCounter.Core\ChestCounter.Core.csproj" />
+    <ProjectReference Include="..\ChestCounter.Application\ChestCounter.Application.csproj" />
+    <ProjectReference Include="..\ChestCounter.Infrastructure\ChestCounter.Infrastructure.csproj" />
+    <Compile Include="Program.cs" />
+    <Compile Include="App.axaml.cs" />
+    <Compile Include="Platform\Windows\*.cs" />
+    <Compile Include="Services\*.cs" />
+    <Compile Include="ViewModels\*.cs" />
+    <Compile Include="Views\**\*.cs" />
+    <AvaloniaResource Include="Assets\**" />
+    <EmbeddedResource Include="Assets\burbarkfont.ttf" LogicalName="ChestCounter.Assets.burbarkfont.ttf" />
   </ItemGroup>
 </Project>

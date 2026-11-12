@@ -1,0 +1,59 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:automation="using:Avalonia.Automation"
+             x:Class="ChestCounter.DashboardHeader">
+  <Grid ColumnDefinitions="150,*" RowDefinitions="Auto,Auto">
+    <Image Grid.RowSpan="2" ZIndex="1" Source="avares://ContadorDeBau/Assets/logo.png"
+           Width="150" Height="140" Stretch="Uniform" VerticalAlignment="Top" Margin="-12,-4,0,0" />
+    <Grid Grid.Column="1" ColumnDefinitions="1,Auto,*,Auto" ColumnSpacing="12" MinHeight="64" Margin="0,6,145,0"
+          Background="Transparent" PointerPressed="OnTitleBarPointerPressed">
+      <Border Background="{StaticResource SecondaryText}" Width="1" Height="32" />
+      <Path x:Name="HeaderMark" Grid.Column="1" Data="M4 10 V6 Q4 4 6 4 H18 Q20 4 20 6 V10 M3 10 H21 V20 H3 Z M3 13 H21 M12 12 V19 M10 15 H14"
+            Stroke="{StaticResource Cyan}" StrokeThickness="1.8" Width="34" Height="34" Stretch="Uniform" />
+      <TextBlock x:Name="HeaderTitle" Grid.Column="2" Text="{Binding WindowTitle}" FontSize="23" FontWeight="Bold"
+                 TextWrapping="Wrap" VerticalAlignment="Center" />
+      <Path x:Name="HeaderStripes" Grid.Column="3" Data="M18,0 L32,0 L14,42 L0,42 Z M39,0 L53,0 L35,42 L21,42 Z"
+            Fill="{StaticResource BrandGradient}" Width="65" Height="50" Stretch="Uniform"
+            Margin="0,0,20,0" />
+    </Grid>
+    <StackPanel Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Top" Orientation="Horizontal">
+      <Button Width="46" Height="48" Padding="0" Background="Transparent" BorderThickness="0"
+              ToolTip.Tip="{Binding MinimizeCaption}" automation:AutomationProperties.Name="{Binding MinimizeCaption}" Click="OnMinimize">
+        <Border Background="{StaticResource PrimaryText}" Width="18" Height="2" />
+      </Button>
+      <Button Width="46" Height="48" Padding="0" Background="Transparent" BorderThickness="0"
+              ToolTip.Tip="{Binding MaximizeCaption}" automation:AutomationProperties.Name="{Binding MaximizeCaption}" Click="OnMaximizeRestore">
+        <Path Data="M3 3 H17 V17 H3 Z" Stroke="{StaticResource PrimaryText}" StrokeThickness="1.5" Width="16" Height="16" Stretch="Uniform" />
+      </Button>
+      <Button Width="46" Height="48" Padding="0" Background="Transparent" BorderThickness="0"
+              ToolTip.Tip="{Binding CloseCaption}" automation:AutomationProperties.Name="{Binding CloseCaption}" Click="OnClose">
+        <Path Data="M3 3 L17 17 M17 3 L3 17" Stroke="{StaticResource PrimaryText}" StrokeThickness="1.5" Width="16" Height="16" Stretch="Uniform" />
+      </Button>
+    </StackPanel>
+    <Grid x:Name="HeaderLower" Grid.Row="1" Grid.Column="1" ColumnDefinitions="*,Auto" RowDefinitions="Auto"
+          ColumnSpacing="12" RowSpacing="6" MinHeight="70" Margin="-40,0,0,0" SizeChanged="OnHeaderSizeChanged">
+      <Border x:Name="HeaderBanner" Background="{StaticResource BrandGradient}" CornerRadius="3,16,16,3"
+              HorizontalAlignment="Left" VerticalAlignment="Center" Width="420" MinHeight="46" Padding="28,3">
+        <TextBlock Text="{Binding BannerTitle}" FontFamily="{StaticResource BrandFont}"
+                   FontStyle="Italic" FontWeight="Bold" FontSize="30" Foreground="White"
+                   VerticalAlignment="Center" TextWrapping="Wrap" />
+      </Border>
+      <Border x:Name="ProfileSelector" Grid.Column="1" BorderBrush="{StaticResource BrandGradient}" BorderThickness="2"
+              CornerRadius="24" Background="{StaticResource PanelBackground}" Padding="8,2"
+              VerticalAlignment="Center">
+        <Grid ColumnDefinitions="Auto,Auto,*" ColumnSpacing="5">
+          <Path Data="M12,2 A4,4 0 1 1 12,10 A4,4 0 1 1 12,2 M3,21 C3,15 6,12 12,12 C18,12 21,15 21,21 Z"
+                Fill="{StaticResource PrimaryText}" Width="24" Height="24" Stretch="Uniform" />
+          <TextBlock Grid.Column="1" Text="{Binding ProfileCaption}" VerticalAlignment="Center" />
+          <ComboBox Grid.Column="2" ItemsSource="{Binding Profiles}" SelectedItem="{Binding SelectedProfile}"
+                    Background="Transparent" BorderThickness="0" MinWidth="90" MaxWidth="180" Padding="4,2"
+                    Foreground="{StaticResource Cyan}" VerticalAlignment="Center">
+            <ComboBox.ItemTemplate>
+              <DataTemplate><TextBlock Text="{Binding Text}" TextWrapping="Wrap" /></DataTemplate>
+            </ComboBox.ItemTemplate>
+          </ComboBox>
+        </Grid>
+      </Border>
+    </Grid>
+  </Grid>
+</UserControl>

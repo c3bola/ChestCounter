@@ -1,0 +1,21 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="ChestCounter.LastMatchPanel">
+  <Border Classes="dashboard-card" MinHeight="84" Padding="20,9" ClipToBounds="True">
+    <Grid RowDefinitions="Auto,*">
+      <Grid ColumnDefinitions="Auto,*,1.2*" ColumnSpacing="12">
+        <Path Data="M5 8 C7 6 9 6 11 7 H17 C20 7 21 9 21 12 L20 17 C19 20 17 20 15 17 H9 C7 20 5 20 4 17 L3 12 C3 10 4 8 5 8 Z M7 10 V14 M5 12 H9"
+              Stroke="{StaticResource PrimaryText}" StrokeThickness="2" Width="30" Height="24" Stretch="Uniform" />
+        <TextBlock Grid.Column="1" Text="{Binding LastMatchCaption}" FontSize="16" VerticalAlignment="Center" TextWrapping="Wrap" />
+        <TextBlock Grid.Column="2" Text="{Binding LastMatchDetails}" FontSize="14" VerticalAlignment="Center"
+                   Foreground="{StaticResource SecondaryText}" TextWrapping="Wrap" TextAlignment="Right" />
+      </Grid>
+      <TextBlock Grid.Row="1" Text="{Binding LastMatchValue}" FontSize="26" FontWeight="Bold"
+                 Foreground="{StaticResource BrandGradient}" VerticalAlignment="Center" TextWrapping="Wrap"
+                 Margin="0,0,65,0" />
+      <Path Grid.Row="1" Data="M18,0 L32,0 L14,18 L0,18 Z M39,0 L53,0 L35,18 L21,18 Z"
+            Fill="{StaticResource BrandGradient}" Width="58" Height="20" Stretch="Uniform"
+            HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,-20,-9" />
+    </Grid>
+  </Border>
+</UserControl>
