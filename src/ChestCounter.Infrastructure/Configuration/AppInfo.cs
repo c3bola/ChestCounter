@@ -3,21 +3,24 @@ namespace ChestCounter;
 /// <summary>Version, GitHub repository and names shared by the tool's processes.</summary>
 public static class AppInfo
 {
-    public static Version Version { get; } = typeof(AppInfo).Assembly.GetName().Version ?? new Version(1, 0, 0);
+    public static Version Version { get; } =
+        System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version
+        ?? typeof(AppInfo).Assembly.GetName().Version
+        ?? new Version(1, 0, 0);
 
     public static string VersionText => $"{Version.Major}.{Version.Minor}.{Math.Max(0, Version.Build)}";
 
-    public const string Repo = "xdoofy92/ChestCounter";
+    public const string Repo = "c3bola/ChestCounter";
     public static string RepoUrl => "https://github.com/" + Repo;
     public static string IssuesUrl => RepoUrl + "/issues";
 
-    /// <summary>Path of ChestCounter.exe when running as the published exe (null under "dotnet ChestCounter.dll").</summary>
+    /// <summary>Path of ContadorDeBau.exe when running as the published exe.</summary>
     public static string? ExePath
     {
         get
         {
             var p = Environment.ProcessPath;
-            return p != null && Path.GetFileName(p).Equals("ChestCounter.exe", StringComparison.OrdinalIgnoreCase) ? p : null;
+            return p != null && Path.GetFileName(p).Equals("ContadorDeBau.exe", StringComparison.OrdinalIgnoreCase) ? p : null;
         }
     }
 

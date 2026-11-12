@@ -3,10 +3,8 @@ using System.Text.Json;
 
 namespace ChestCounter;
 
-public sealed record UpdateInfo(Version Version, string Tag, string AssetUrl, long Size, string? Sha256, string PageUrl);
-
 /// <summary>
-/// Checks the latest GitHub release and replaces ChestCounter.exe with it. The running exe is renamed (Windows allows
+/// Checks the latest GitHub release and replaces ContadorDeBau.exe with it. The running exe is renamed (Windows allows
 /// that), the new one takes its place and is started; the old file is deleted at the next launch.
 /// This is the only network access of the tool, and it can be turned off in the settings.
 /// </summary>
@@ -48,7 +46,7 @@ public static class Updater
             }
             foreach (var asset in root.GetProperty("assets").EnumerateArray())
             {
-                if (!string.Equals(asset.GetProperty("name").GetString(), "ChestCounter.exe", StringComparison.OrdinalIgnoreCase))
+                if (!string.Equals(asset.GetProperty("name").GetString(), "ContadorDeBau.exe", StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }
@@ -76,7 +74,7 @@ public static class Updater
         var exe = AppInfo.ExePath;
         if (exe == null)
         {
-            return L.T("La actualización solo es posible desde ChestCounter.exe", "Updating is only possible from ChestCounter.exe");
+            return L.T("updater.updating_is_only_possible_from_chestcounter_exe");
         }
         var download = exe + ".download";
         var old = exe + ".old";
@@ -92,13 +90,13 @@ public static class Updater
             var info = new FileInfo(download);
             if (info.Length != update.Size)
             {
-                throw new IOException(L.T("descarga incompleta", "incomplete download"));
+                throw new IOException(L.T("updater.incomplete_download"));
             }
             using (var fs = File.OpenRead(download))
             {
                 if (fs.ReadByte() != 'M' || fs.ReadByte() != 'Z')
                 {
-                    throw new IOException(L.T("el archivo descargado no es un .exe", "the downloaded file is not an .exe"));
+                    throw new IOException(L.T("updater.the_downloaded_file_is_not_an_exe"));
                 }
                 if (update.Sha256 != null)
                 {
@@ -106,7 +104,7 @@ public static class Updater
                     var hash = Convert.ToHexString(SHA256.HashData(fs));
                     if (!hash.Equals(update.Sha256, StringComparison.OrdinalIgnoreCase))
                     {
-                        throw new IOException(L.T("suma SHA-256 incorrecta", "wrong SHA-256 checksum"));
+                        throw new IOException(L.T("updater.wrong_sha_256_checksum"));
                     }
                 }
             }
@@ -127,7 +125,8 @@ public static class Updater
         catch (Exception ex)
         {
             try { File.Delete(download); } catch { }
-            return ex.Message;
+            ErrorLog.Write("Install update", ex);
+            return L.T("error.update_failed");
         }
     }
 
@@ -140,11 +139,14 @@ public static class Updater
         {
             return;
         }
-        foreach (var f in Directory.EnumerateFiles(dir, "ChestCounter.exe.*"))
+        foreach (var pattern in new[] { "ContadorDeBau.exe.*", "ChestCounter.exe.*" })
         {
-            if (f.EndsWith(".old", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".download", StringComparison.OrdinalIgnoreCase))
+            foreach (var f in Directory.EnumerateFiles(dir, pattern))
             {
-                try { File.Delete(f); } catch { /* still in use: next time */ }
+                if (f.EndsWith(".old", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".download", StringComparison.OrdinalIgnoreCase))
+                {
+                    try { File.Delete(f); } catch { /* still in use: next time */ }
+                }
             }
         }
     }

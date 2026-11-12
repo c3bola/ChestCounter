@@ -5,7 +5,7 @@ namespace ChestCounter;
 /// <summary>
 /// Vigila la carpeta de replays de Fortnite, analiza una vez cada replay terminado y acumula los resultados.
 /// </summary>
-public sealed class Tracker
+public sealed class Tracker : IMonitorTracking
 {
     private static readonly TimeSpan QuietPeriod = TimeSpan.FromSeconds(10);
 
@@ -136,7 +136,7 @@ public sealed class Tracker
 
         var batch = ready.Count >= 2;
         var profilesBefore = Profiles.List(_data).Count;
-        var bar = batch ? new ProgressBar(L.T("Analizando replays", "Analyzing replays"), ready.Count) : null;
+        var bar = batch ? new ProgressBar(L.T("tracker.analyzing_replays"), ready.Count) : null;
         var outcomes = new List<Outcome>();
         for (var i = 0; i < ready.Count; i++)
         {
@@ -153,10 +153,8 @@ public sealed class Tracker
                 var mb = (file.Length / 1024 / 1024.0).ToString("F1", L.Culture);
                 var justEnded = DateTime.UtcNow - file.LastWriteTimeUtc < TimeSpan.FromMinutes(2);
                 Console.WriteLine(justEnded
-                    ? L.F("[{0:HH:mm:ss}] Partida terminada: analizando el replay ({1} MB)…",
-                          "[{0:HH:mm:ss}] Match over: analyzing the replay ({1} MB)…", DateTime.Now, mb)
-                    : L.F("[{0:HH:mm:ss}] Analizando {1} ({2} MB)…",
-                          "[{0:HH:mm:ss}] Analyzing {1} ({2} MB)…", DateTime.Now, file.Name, mb));
+                    ? L.F("tracker.match_over_analyzing_the_replay_mb", DateTime.Now, mb)
+                    : L.F("tracker.analyzing_mb", DateTime.Now, file.Name, mb));
                 Console.ResetColor();
             }
 
@@ -235,11 +233,10 @@ public sealed class Tracker
         }
         catch (Exception ex)
         {
-            var message = (ex as AggregateException)?.InnerException?.Message ?? ex.Message;
             ErrorLog.Write($"Unreadable replay: {file.FullName} ({file.Length} bytes, {file.LastWriteTime:yyyy-MM-dd HH:mm:ss})", ex);
-            _data.ProcessedFiles[key] = "error: " + message;
+            _data.ProcessedFiles[key] = "error";
             _store.SaveData(_data);
-            return new Outcome(Error: $"{file.Name} : {message}");
+            return new Outcome(Error: file.Name);
         }
 
         record.ReplayFile = file.Name;
@@ -250,8 +247,7 @@ public sealed class Tracker
             _data.Matches.RemoveAll(m => m.SessionId == record.SessionId);
             _data.ProcessedFiles[key] = "other mode";
             _store.SaveData(_data);
-            return new Outcome(Skipped: L.T("no es una partida Battle Royale (creativo / otro modo)",
-                "not a Battle Royale match (Creative / other mode)"));
+            return new Outcome(Skipped: L.T("tracker.not_a_battle_royale_match_creative_other_mode"));
         }
 
         if (!Profiles.IsSupportedVersion(record))
@@ -259,8 +255,7 @@ public sealed class Tracker
             _data.Matches.RemoveAll(m => m.SessionId == record.SessionId);
             _data.ProcessedFiles[key] = "older version";
             _store.SaveData(_data);
-            return new Outcome(Skipped: L.T("versión anterior a v43 (Capítulo 7 Mini Temporada)",
-                "version prior to v43 (Chapter 7 Mini Season)"));
+            return new Outcome(Skipped: L.T("tracker.version_prior_to_v43_chapter_7_mini_season"));
         }
 
         var existing = _data.Matches.FirstOrDefault(m => m.SessionId == record.SessionId);
@@ -268,8 +263,7 @@ public sealed class Tracker
         {
             _data.ProcessedFiles[key] = record.SessionId;
             _store.SaveData(_data);
-            return new Outcome(Skipped: L.T("partida ya contada (misma partida, archivo renombrado)",
-                "match already counted (same match, renamed file)"));
+            return new Outcome(Skipped: L.T("tracker.match_already_counted_same_match_renamed_file"));
         }
 
         if (existing != null)
@@ -307,14 +301,14 @@ public sealed class Tracker
         if (o.Error != null)
         {
             Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine(L.F("   No se puede leer este replay: {0}", "   Cannot read this replay: {0}", o.Error));
+            Console.WriteLine(L.F("tracker.cannot_read_this_replay", o.Error));
             Console.ResetColor();
             PrintErrorLogHint();
             return;
         }
         if (o.Skipped != null)
         {
-            Console.WriteLine($"   {L.T("Ignorado", "Skipped")}: {o.Skipped}.");
+            Console.WriteLine(L.F("tracker.skipped_line", L.T("tracker.skipped"), o.Skipped));
             return;
         }
 
@@ -324,9 +318,8 @@ public sealed class Tracker
         if (current != null && Profiles.Key(m) != current.Key)
         {
             Console.ForegroundColor = ConsoleColor.DarkYellow;
-            var name = m.PlayerName ?? L.T("cuenta desconocida", "unknown account");
-            Console.WriteLine(L.F("   Partida jugada en otra cuenta ({0}): cuenta para su propio perfil. Perfil mostrado: {1}.",
-                "   Match played on another account ({0}): it counts for its own profile. Profile shown: {1}.", name, current.Name));
+            var name = m.PlayerName ?? L.T("tracker.unknown_account");
+            Console.WriteLine(L.F("tracker.match_played_on_another_account_it_counts_for", name, current.Name));
             Console.ResetColor();
         }
         PrintNewPrizeIds(o.NewPrizeIds);
@@ -339,8 +332,7 @@ public sealed class Tracker
         if (ids is { Count: > 0 })
         {
             Console.ForegroundColor = ConsoleColor.DarkYellow;
-            Console.WriteLine(L.F("   Tesoro(s) por nombrar en {0}: {1}",
-                "   Treasure(s) to name in {0}: {1}", _store.PrizeNamesPath, string.Join(", ", ids)));
+            Console.WriteLine(L.F("tracker.treasure_s_to_name_in", _store.PrizeNamesPath, string.Join(", ", ids)));
             Console.ResetColor();
         }
     }
@@ -348,8 +340,7 @@ public sealed class Tracker
     private void PrintErrorLogHint()
     {
         Console.ForegroundColor = ConsoleColor.DarkGray;
-        Console.WriteLine(L.F("   Detalles en {0}. Suele deberse a una actualización de Fortnite: notifícalo en {1}",
-            "   Details in {0}. Usually caused by a Fortnite update: report it at {1}", _store.ErrorLogPath, AppInfo.IssuesUrl));
+        Console.WriteLine(L.F("tracker.details_in_usually_caused_by_a_fortnite_update", _store.ErrorLogPath, AppInfo.IssuesUrl));
         Console.ResetColor();
     }
 
@@ -360,30 +351,29 @@ public sealed class Tracker
         var errors = outcomes.Where(o => o.Error != null).Select(o => o.Error!).ToList();
 
         Console.ForegroundColor = ConsoleColor.Green;
-        Console.Write($"  ✔ {L.Count(outcomes.Count, "replay analizado", "replays analizados", "replay analyzed", "replays analyzed")}");
+        Console.Write($"  ✔ {L.Count(outcomes.Count, "common.replay_analyzed", "common.replays_analyzed")}");
         Console.ResetColor();
         Console.Write(": ");
         Console.ForegroundColor = ConsoleColor.Yellow;
-        Console.Write($"{L.Count(matches.Count, "partida", "partidas", "match", "matches")}, {L.Count(matches.Sum(m => m.ChestsOpened), "cofre", "cofres", "chest", "chests")}");
+        Console.Write($"{L.Count(matches.Count, "common.match", "common.matches")}, {L.Count(matches.Sum(m => m.ChestsOpened), "common.chest", "common.chests")}");
         var treasures = matches.Sum(m => m.TreasureFinds.Count);
         if (treasures > 0)
         {
             Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.Write($", ★ {L.Count(treasures, "tesoro", "tesoros", "treasure", "treasures")}");
+            Console.Write($", ★ {L.Count(treasures, "common.treasure", "common.treasures")}");
         }
         Console.ResetColor();
         Console.WriteLine();
         if (skipped > 0)
         {
             Console.ForegroundColor = ConsoleColor.DarkGray;
-            Console.WriteLine(L.F("    {0} ignorado(s): versiones anteriores, modos creativos o partidas ya contadas.",
-                "    {0} skipped: older versions, Creative modes or matches already counted.", skipped));
+            Console.WriteLine(L.F("tracker.skipped_older_versions_creative_modes_or_matches", skipped));
             Console.ResetColor();
         }
         if (errors.Count > 0)
         {
             Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine(L.F("    {0} replay(s) ilegible(s):", "    {0} unreadable replay(s):", errors.Count));
+            Console.WriteLine(L.F("tracker.unreadable_replay_s", errors.Count));
             foreach (var e in errors.Take(5))
             {
                 Console.WriteLine($"      {e}");
@@ -427,7 +417,7 @@ public sealed class Tracker
         worker.Start();
         if (!worker.Join(timeout))
         {
-            throw new TimeoutException(L.T("análisis demasiado largo", "analysis took too long"));
+            throw new TimeoutException(L.T("tracker.analysis_took_too_long"));
         }
         bytes = Array.Empty<byte>();
         ReleaseMemory();
@@ -487,8 +477,7 @@ public sealed class Tracker
             _liveFile = file.FullName;
             started = true;
             Console.ForegroundColor = ConsoleColor.DarkGray;
-            Console.WriteLine(L.F("[{0:HH:mm:ss}] Partida en curso… (sus cofres se contarán al final)",
-                "[{0:HH:mm:ss}] Match in progress… (its chests will be counted at the end)", DateTime.Now));
+            Console.WriteLine(L.F("tracker.match_in_progress_its_chests_will_be_counted", DateTime.Now));
             Console.ResetColor();
         }
 
@@ -528,8 +517,13 @@ public sealed class Tracker
         if (changed && LiveMatch != null)
         {
             Console.ForegroundColor = ConsoleColor.DarkGray;
-            Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] {L.T("Partida en curso", "Match in progress")}: {L.Count(LiveMatch.ChestsOpened, "cofre", "cofres", "chest", "chests")}"
-                + (LiveMatch.TreasureFinds.Count > 0 ? $", {L.Count(LiveMatch.TreasureFinds.Count, "tesoro", "tesoros", "treasure", "treasures")}" : ""));
+            var message = LiveMatch.TreasureFinds.Count > 0
+                ? L.F("tracker.live_summary_treasures", DateTime.Now,
+                    L.Count(LiveMatch.ChestsOpened, "common.chest", "common.chests"),
+                    L.Count(LiveMatch.TreasureFinds.Count, "common.treasure", "common.treasures"))
+                : L.F("tracker.live_summary", DateTime.Now,
+                    L.Count(LiveMatch.ChestsOpened, "common.chest", "common.chests"));
+            Console.WriteLine(message);
             Console.ResetColor();
         }
         return changed || started;
@@ -563,26 +557,25 @@ public sealed class Tracker
         var when = (m.MatchStartUtc ?? m.AnalyzedAtUtc).ToLocalTime();
 
         Console.ForegroundColor = ConsoleColor.Green;
-        Console.Write($"   {(updated ? "↻" : "✔")} {L.T("Partida del", "Match of")} {L.DateTimeShort(when)}");
+        Console.Write($"   {(updated ? "↻" : "✔")} {L.F("tracker.match_date", L.DateTimeShort(when))}");
         Console.ResetColor();
         Console.Write($" ({Pretty.Playlist(m.Playlist)}, {Pretty.Placement(m)}): ");
         Console.ForegroundColor = ConsoleColor.Yellow;
         var destroyed = m.Chests.Count(c => c.Destroyed);
-        Console.Write(L.Count(m.ChestsOpened, "cofre", "cofres", "chest", "chests")
-            + (destroyed > 0 ? L.F(" ({0} destruido(s))", " ({0} destroyed)", destroyed) : ""));
+        Console.Write(L.Count(m.ChestsOpened, "common.chest", "common.chests")
+            + (destroyed > 0 ? L.F("tracker.destroyed", destroyed) : ""));
         Console.ResetColor();
-        Console.WriteLine($"  →  total: {L.N(total)}");
+        Console.WriteLine(L.F("tracker.total", L.N(total)));
 
         foreach (var find in m.TreasureFinds)
         {
             Console.ForegroundColor = find.FromGoldenChest ? ConsoleColor.Yellow : ConsoleColor.Cyan;
-            Console.WriteLine($"   {(find.FromGoldenChest ? "★★" : "★")} {L.T("Tesoro obtenido: ", "Treasure obtained: ")}{find.DisplayName} ({Pretty.Obtained(find)})");
+            Console.WriteLine(L.F("tracker.treasure_obtained_line", find.DisplayName, Pretty.Obtained(find)));
             if (!find.SourceIsChest)
             {
                 Console.ForegroundColor = ConsoleColor.Cyan;
-                Console.WriteLine(L.F("   ⚑ Origen inusual: {0}{1} [{2}] → anotado en el informe",
-                    "   ⚑ Unusual source: {0}{1} [{2}] → noted in the report",
-                    find.SourceLabel, find.SourceCertain ? "" : L.T(" (probable)", " (likely)"), find.SourceBlueprint));
+                Console.WriteLine(L.F("tracker.unusual_source_noted_in_the_report", find.SourceLabel,
+                    find.SourceCertain ? "" : L.T("tracker.likely"), find.SourceBlueprint));
             }
             Console.ResetColor();
         }
@@ -601,12 +594,11 @@ public sealed class Tracker
         {
             sb.Append($"{profile.Name}   |   ");
         }
-        sb.Append(L.F("Partidas: {0}   |   Cofres: {1}   |   Tesoros: {2}",
-            "Matches: {0}   |   Chests: {1}   |   Treasures: {2}", L.N(matches.Count), L.N(chests), L.N(treasures)));
+        sb.Append(L.F("tracker.matches_chests_treasures", L.N(matches.Count), L.N(chests), L.N(treasures)));
         if (matches.Count > 0)
         {
             var avg = ((double)counted / matches.Count).ToString("F1", L.Culture);
-            sb.Append(L.F("   |   Media: {0} / partida", "   |   Average: {0} / match", avg));
+            sb.Append(L.F("tracker.average_match", avg));
         }
 
         Console.ForegroundColor = ConsoleColor.Cyan;

@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 namespace ChestCounter;
 
 /// <summary>Windows 10 1709+ / 11 power throttling ("efficiency mode"): lets Windows run the tool on efficient cores at low clocks.</summary>
-internal static class EcoQos
+public static class EcoQos
 {
     private const int ProcessPowerThrottling = 4;
     private const uint PROCESS_POWER_THROTTLING_CURRENT_VERSION = 1;

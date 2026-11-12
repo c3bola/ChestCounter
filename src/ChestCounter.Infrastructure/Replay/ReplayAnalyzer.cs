@@ -570,7 +570,7 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
                     .ToDictionary(g => g.Key, g => g.Count());
                 teammates.Add(new TeammateRecord
                 {
-                    Name = !string.IsNullOrWhiteSpace(mate.PlayerName) ? mate.PlayerName.Trim() : L.T("Compañero", "Teammate"),
+                    Name = !string.IsNullOrWhiteSpace(mate.PlayerName) ? mate.PlayerName.Trim() : L.T("replay.teammate"),
                     EpicId = mate.EpicId,
                     ChestsSeen = kinds.Where(k => ChestKinds.IsChest(k.Key)).Sum(k => k.Value),
                     Kinds = kinds,
@@ -778,88 +778,3 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
 }
 
 internal static class SafeExt { }
-
-public static class TreasureNames
-{
-    /// <summary>Prize id -> display name, loaded from treasures.json (user editable).</summary>
-    public static Dictionary<string, string> PrizeNames { get; } = new(StringComparer.OrdinalIgnoreCase);
-
-    /// <summary>Key prefix of a treasure whose prize id is not in the replay (another prefix before version 1.1).</summary>
-    public const string UnknownPrefix = "Unknown:";
-    public const string UnknownGizmo = "Treasure gizmo";
-    private const string OldUnknownPrefix = "Inconnu:";
-
-    /// <summary>Display name of a prize id (from treasures.json), or of a treasure item blueprint.</summary>
-    public static string Friendly(string item)
-    {
-        if (item.Contains(':'))
-        {
-            var unknown = item.StartsWith(UnknownPrefix, StringComparison.OrdinalIgnoreCase) || item.StartsWith(OldUnknownPrefix, StringComparison.OrdinalIgnoreCase);
-            if (PrizeNames.TryGetValue(item, out var name) && !string.IsNullOrWhiteSpace(name))
-            {
-                return name;
-            }
-            if (unknown)
-            {
-                // Same treasure under the other prefix (named by the player with an older version, or re-analyzed).
-                var rest = item[(item.IndexOf(':') + 1)..];
-                foreach (var prefix in new[] { UnknownPrefix, OldUnknownPrefix })
-                {
-                    if (PrizeNames.TryGetValue(prefix + rest, out var other) && !string.IsNullOrWhiteSpace(other))
-                    {
-                        return other;
-                    }
-                }
-                // Not a golden chest prize (those carry their id): one of the treasure hunt gizmos (golden
-                // firework, portable extractor, locators, extraction accelerator), exact one not in the replay.
-                return L.Name(UnknownGizmo);
-            }
-            return L.F("Tesoro desconocido ({0})", "Unknown treasure ({0})", item[(item.IndexOf(':') + 1)..]);
-        }
-
-
-        var i = item.ToLowerInvariant();
-        if (i.Contains("flameceleb")) return "Golden firework";
-        if (i.Contains("relicextractor")) return "Portable extractor";
-        if (i.Contains("relicfinder")) return "Spirit locator";
-        if (i.Contains("luckylocator")) return "Lucky locator";
-        if (i.Contains("smugglerextractionkey") || i.Contains("extractionaccelerat")) return "Extraction accelerator";
-        return item;
-    }
-}
-
-public static class ChestKinds
-{
-    // Chests (counted in the total)
-    public const string Normal = "Chest";
-    public const string Rare = "Rare chest";
-    public const string Buried = "Buried chest";
-    public const string Extraction = "Extraction / relic chest";
-    public const string PosterChest = "Spirit poster chest";
-    public const string Other = "Other chest";
-
-    // Other interactions (tracked separately, not in the chest total)
-    public const string Cannon = "Loot cannon";
-    public const string AmmoBox = "Ammo box";
-    public const string FoodBox = "Food box";
-    public const string OtherContainer = "Other container";
-
-    private static readonly HashSet<string> ChestSet = new() { Normal, Rare, Buried, Extraction, PosterChest, Other };
-
-    public static bool IsChest(string kind) => ChestSet.Contains(kind);
-
-    public static string Classify(string blueprint)
-    {
-        var b = blueprint.ToLowerInvariant();
-        if (b.Contains("lootcannon") || b.Contains("cannon")) return Cannon;
-        if (b.Contains("ammo")) return AmmoBox;
-        if (b.Contains("foodbox") || b.Contains("food_box")) return FoodBox;
-        if (b.Contains("rarechest") || b.Contains("legendary") || b.Contains("rare_chest")) return Rare;
-        if (b.Contains("buried")) return Buried;
-        if (b.Contains("spriteposter") || b.Contains("booty")) return PosterChest;
-        if (b.Contains("relic") || b.Contains("extraction")) return Extraction;
-        if (b.Contains("tiered_chest") || b.Contains("normalchest") || b.Contains("standardchest")) return Normal;
-        // Coolers, barrels, etc. are not chests.
-        return b.Contains("chest") ? Other : OtherContainer;
-    }
-}
