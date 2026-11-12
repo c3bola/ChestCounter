@@ -1,7 +1,13 @@
 @echo off
 chcp 65001 >nul
-title Building ChestCounter
+title Building ContadorDeBau
 cd /d "%~dp0"
+
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\Validate-Localization.ps1
+if errorlevel 1 (
+  echo Localization validation failed.
+  exit /b 1
+)
 
 where dotnet >nul 2>nul
 if errorlevel 1 (
@@ -24,6 +30,6 @@ if errorlevel 1 (
 )
 
 echo.
-echo Done! The file to share: %~dp0dist\ChestCounter.exe
+echo Done! The file to share: %~dp0dist\ContadorDeBau.exe
 explorer dist
 pause
