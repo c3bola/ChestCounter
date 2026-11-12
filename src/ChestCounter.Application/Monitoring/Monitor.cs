@@ -3,7 +3,7 @@ using System.Runtime.Versioning;
 namespace ChestCounter;
 
 /// <summary>Lo que muestra la ventana.</summary>
-public sealed record MonitorState(OverlayView View, IReadOnlyList<Profile> Profiles, string? CurrentKey, UpdateInfo? Update, string? Notice, bool AutoCloseOffer, ChestStats Stats)
+public sealed record MonitorState(OverlayState Overlay, IReadOnlyList<Profile> Profiles, string? CurrentKey, UpdateInfo? Update, string? Notice, bool AutoCloseOffer, ChestStats Stats)
 {
     /// <summary>Equipo de la partida en curso o de la última (null si «Compañeros» está desactivado).</summary>
     public TeamSummary? Team { get; init; }
@@ -61,15 +61,18 @@ public sealed class Monitor
 {
     /// <summary>Protege solo la configuración (escrituras cortas desde la ventana, el overlay y el hilo de vigilancia).</summary>
     private readonly object _cfgGate = new();
-    private readonly Store _store;
+    private readonly IMonitorStorage _store;
     private readonly Config _config;
     private readonly TrackerData _data;
-    private readonly Tracker _tracker;
+    private readonly IMonitorTracking _tracker;
+    private readonly IOverlayHost _overlayHost;
+    private readonly MonitorDependencies _services;
     private readonly string _dataDir;
     private readonly AutoResetEvent _wake = new(false);
     private FileSystemWatcher? _watcher;
     private volatile bool _stop;
     private volatile bool _publishRequested;
+    private volatile OverlayState? _latestOverlay;
     private volatile bool _reportRequested;
     private volatile string? _shownKey;
     private volatile string? _shownName;
@@ -83,17 +86,20 @@ public sealed class Monitor
     private DateTime? _autoCloseAt;
     private bool _closeRequested;
 
-    public Monitor(Store store, Config config, TrackerData data, Tracker tracker, string dataDir)
+    public Monitor(IMonitorStorage store, Config config, TrackerData data, IMonitorTracking tracker, string dataDir, IOverlayHost overlayHost, MonitorDependencies services)
     {
         _store = store;
         _config = config;
         _data = data;
         _tracker = tracker;
         _dataDir = dataDir;
+        _overlayHost = overlayHost;
+        _services = services;
     }
 
     /// <summary>Ajustes actuales (leer; los cambios se hacen con <see cref="Change"/>).</summary>
     public Config Config => _config;
+    public OverlayState? LatestOverlay => _latestOverlay;
 
     /// <summary>Abierto por el proceso en espera de Fortnite: se cierra solo cuando Fortnite se cierra.</summary>
     public bool AutoMode { get; set; }
@@ -119,12 +125,30 @@ public sealed class Monitor
 
     public void Start()
     {
+        if (_config.OverlayScalePercent != OverlayScale.Clamp(_config.OverlayScalePercent))
+        {
+            _services.Errors.Write("Overlay scale", new ArgumentOutOfRangeException(nameof(_config.OverlayScalePercent)));
+            _config.OverlayScalePercent = OverlayScale.Clamp(_config.OverlayScalePercent);
+        }
         if (OperatingSystem.IsWindows())
         {
             StartOverlay();
         }
         RestartWatcher();
-        ObsServer.Start(_config.ObsPort > 0 ? _config.ObsPort : ObsServer.DefaultPort);
+        _services.Obs.Start(_config.ObsPort > 0 ? _config.ObsPort : Config.DefaultObsPort);
+        _services.Obs.UpdateScale(_config.OverlayScalePercent);
+        if (OperatingSystem.IsWindows())
+        {
+            try
+            {
+                _latestOverlay = BuildOverlay();
+                _overlayHost.Update(_latestOverlay);
+            }
+            catch (Exception ex)
+            {
+                _services.Errors.Write("Initial overlay", ex);
+            }
+        }
 
         new Thread(Loop) { IsBackground = true, Name = "Vigilancia" }.Start();
 
@@ -133,7 +157,7 @@ public sealed class Monitor
         {
             _ = Task.Run(async () =>
             {
-                var found = await Updater.CheckAsync();
+                var found = await _services.Updates.CheckAsync();
                 if (found != null)
                 {
                     _update = found;
@@ -145,9 +169,17 @@ public sealed class Monitor
 
     public void Stop()
     {
-        ObsServer.Stop();
-        _stop = true;
+        ResetRequest? pendingReset;
+        lock (_cfgGate)
+        {
+            _stop = true;
+            pendingReset = _resetRequest;
+            _resetRequest = null;
+        }
+        pendingReset?.Completion.TrySetCanceled();
         _wake.Set();
+        _services.Obs.Stop();
+        _overlayHost.Stop();
         _watcher?.Dispose();
     }
 
@@ -169,7 +201,14 @@ public sealed class Monitor
         RequestPublish();
     }
 
-    public void SetProfile(string key) => Change(c => c.Profile = key);
+    public void SetProfile(string key)
+    {
+        Change(c =>
+        {
+            c.Profile = key;
+            _reportRequested = true;
+        });
+    }
 
     /// <summary>Sumar o no al total las cajas de munición, de comida o los cañones de botín. Rehace el informe enseguida.</summary>
     public void SetCountExtra(Action<Config> change)
@@ -221,19 +260,34 @@ public sealed class Monitor
         Change(c => c.ShowTeammates = show);
     }
 
-    private volatile string? _resetBackup;
+    private sealed record ResetRequest(string Backup, TaskCompletionSource<string> Completion);
+    private ResetRequest? _resetRequest;
+    private bool _resetInProgress;
 
     /// <summary>
     /// Restablece las estadísticas: borra todo el historial (y los cofres de antes del contador) y empieza de cero.
     /// Los replays que ya están en la carpeta no se vuelven a contar. Antes se guarda una copia de data.json.
-    /// Devuelve la ruta de esa copia. Se hace en el hilo de vigilancia, que es el dueño de los datos.
+    /// La tarea devuelve la ruta de esa copia cuando termina el trabajo en el hilo de vigilancia.
     /// </summary>
-    public string ResetStats()
+    public Task<string> ResetStatsAsync()
     {
         var backup = Path.Combine(_store.Folder, $"data-backup-{DateTime.Now:yyyyMMdd-HHmmss}.json");
-        _resetBackup = backup;
+        var completion = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (_cfgGate)
+        {
+            if (_stop)
+            {
+                completion.SetCanceled();
+                return completion.Task;
+            }
+            if (_resetRequest != null || _resetInProgress)
+            {
+                throw new InvalidOperationException("A statistics reset is already pending.");
+            }
+            _resetRequest = new ResetRequest(backup, completion);
+        }
         _wake.Set();
-        return backup;
+        return completion.Task;
     }
 
     /// <summary>Nombre del perfil mostrado, o null si aún no hay partidas.</summary>
@@ -277,7 +331,7 @@ public sealed class Monitor
     /// </summary>
     private void WriteReportAtStart()
     {
-        ReportWriter.WriteAll(_store, _config, _data);
+        _services.Reporting.WriteAll(_store, _config, _data);
         if (_config.OpenReportOnStart && !AutoMode && File.Exists(_store.ReportPath))
         {
             try
@@ -297,12 +351,12 @@ public sealed class Monitor
         RestartWatcher();
     }
 
-    /// <summary>Abrir con Fortnite: crea o quita la entrada de inicio. Devuelve false si no se puede (no es ChestCounter.exe).</summary>
+    /// <summary>Abrir con Fortnite: crea o quita la entrada de inicio. Devuelve false si no se puede.</summary>
     public bool SetStartWithFortnite(bool on)
     {
         lock (_cfgGate)
         {
-            if (!OperatingSystem.IsWindows() || !FortniteWatch.Apply(on, _dataDir))
+            if (!OperatingSystem.IsWindows() || !_services.Game.Apply(on, _dataDir))
             {
                 return false;
             }
@@ -325,7 +379,7 @@ public sealed class Monitor
     public bool OverlayEnabled => OperatingSystem.IsWindows();
 
     /// <summary>True cuando el overlay está en pantalla (desactivado por defecto).</summary>
-    public bool OverlayVisible => OperatingSystem.IsWindows() && NativeOverlay.IsVisible;
+    public bool OverlayVisible => OperatingSystem.IsWindows() && _overlayHost.IsVisible;
 
     public void ToggleOverlay()
     {
@@ -333,9 +387,9 @@ public sealed class Monitor
         {
             return;
         }
-        if (NativeOverlay.IsRunning)
+        if (_overlayHost.IsRunning)
         {
-            NativeOverlay.Toggle();
+            _overlayHost.Toggle();
             return;
         }
         lock (_cfgGate)
@@ -345,6 +399,36 @@ public sealed class Monitor
         }
         StartOverlay();
         RequestPublish();
+    }
+
+    public void ToggleOverlayLock()
+    {
+        if (_overlayHost.IsRunning) _overlayHost.ToggleLock();
+    }
+
+    public bool SetOverlayScale(int value)
+    {
+        var scale = OverlayScale.Clamp(value);
+        lock (_cfgGate)
+        {
+            var previous = _config.OverlayScalePercent;
+            _config.OverlayScalePercent = scale;
+            try
+            {
+                _store.SaveConfig(_config);
+            }
+            catch (Exception ex)
+            {
+                _config.OverlayScalePercent = previous;
+                _services.Errors.Write("Save overlay scale", ex);
+                _overlayHost.SetScale(previous);
+                return false;
+            }
+            _overlayHost.SetScale(scale);
+            _services.Obs.UpdateScale(scale);
+        }
+        RequestPublish();
+        return true;
     }
 
     /// <summary>Descarga e instala la nueva versión en segundo plano; luego pide reiniciar.</summary>
@@ -359,7 +443,7 @@ public sealed class Monitor
         RequestPublish();
         _ = Task.Run(() =>
         {
-            var error = Updater.Install(u);
+            var error = _services.Updates.Install(u);
             _installing = false;
             if (error == null)
             {
@@ -367,7 +451,7 @@ public sealed class Monitor
                 CloseRequested?.Invoke();
                 return;
             }
-            _notice = L.F("No se pudo actualizar: {0}", "Update failed: {0}", error);
+            _notice = error;
             RequestPublish();
         });
     }
@@ -391,25 +475,45 @@ public sealed class Monitor
             first = false;
             _publishRequested = false;
 
-            if (_resetBackup is { } backup)
+            ResetRequest? reset;
+            lock (_cfgGate)
             {
-                _resetBackup = null;
+                reset = _resetRequest;
+                _resetRequest = null;
+                _resetInProgress = reset != null;
+            }
+            if (reset != null)
+            {
                 try
                 {
-                    _tracker.Reset(backup);
+                    if (!File.Exists(_store.DataPath))
+                    {
+                        _store.SaveData(_data);
+                    }
+                    _tracker.Reset(reset.Backup);
+                    _reportRequested = true;
                     lock (_cfgGate)
                     {
                         _config.InitialChests.Clear();
                         _config.Profile = null;
-                        SaveQuietly();
+                        _store.SaveConfig(_config);
                     }
-                    _reportRequested = true;
                     changed = true;
+                    reset.Completion.TrySetResult(reset.Backup);
                 }
                 catch (Exception ex)
                 {
-                    ErrorLog.Write("Restablecer estadísticas", ex);
-                    _notice = L.F("No se pudo restablecer: {0}", "Could not reset: {0}", ex.Message);
+                    _services.Errors.Write("Restablecer estadísticas", ex);
+                    _notice = L.T("error.reset_failed");
+                    changed = true;
+                    reset.Completion.TrySetException(ex);
+                }
+                finally
+                {
+                    lock (_cfgGate)
+                    {
+                        _resetInProgress = false;
+                    }
                 }
             }
 
@@ -431,14 +535,14 @@ public sealed class Monitor
             }
             catch (Exception ex)
             {
-                ErrorLog.Write("Vigilancia", ex);
+                _services.Errors.Write("Vigilancia", ex);
             }
 
             changed |= CheckUpdate();
             if (_reportRequested)
             {
                 _reportRequested = false;
-                ReportWriter.WriteAll(_store, _config, _data);
+                _services.Reporting.WriteAll(_store, _config, _data);
             }
             if (changed || _publishRequested)
             {
@@ -451,24 +555,34 @@ public sealed class Monitor
         }
     }
 
+    private OverlayState BuildOverlay()
+    {
+        var liveAdjusted = (_tracker.LiveMatch != null && Profiles.Counted(_tracker.LiveMatch, _config)) ? Profiles.Adjust(_tracker.LiveMatch, _config) : null;
+        return OverlayModel.Build(
+            Profiles.View(_data, _config),
+            liveAdjusted,
+            _tracker.IsLive && (_tracker.LiveMatch == null || liveAdjusted != null),
+            _services.Reporting.SessionStartUtc,
+            Profiles.InitialChests(_data, _config));
+    }
+
     private void Publish()
     {
         var shown = Profiles.Current(_data, _config);
         _shownKey = shown?.Key;
         _shownName = shown?.Name;
-        var liveAdjusted = (_tracker.LiveMatch != null && Profiles.Counted(_tracker.LiveMatch, _config)) ? Profiles.Adjust(_tracker.LiveMatch, _config) : null;
-        var view = OverlayModel.Build(Profiles.View(_data, _config), liveAdjusted, _tracker.IsLive && liveAdjusted != null, Profiles.InitialChests(_data, _config));
-        ReportWriter.WriteOverlay(_store, view);
-        ObsServer.Update(view);
-        if (OperatingSystem.IsWindows() && NativeOverlay.IsRunning)
+        var overlay = BuildOverlay();
+        _latestOverlay = overlay;
+        _services.Reporting.WriteOverlay(_store, overlay, _config.OverlayScalePercent);
+        if (OperatingSystem.IsWindows())
         {
-            NativeOverlay.Update(view);
+            _overlayHost.Update(overlay);
         }
 
         var notice = _installing
-            ? L.T("Descargando la actualización…", "Downloading the update…")
-            : _notice ?? (_autoCloseAt != null ? L.T("Fortnite está cerrado: el contador se cierra en 30 s.", "Fortnite is closed: the counter closes in 30 s.") : null);
-        var state = new MonitorState(view, Profiles.List(_data, _config), Profiles.Current(_data, _config)?.Key, _update, notice, _autoCloseAt != null, BuildStats())
+            ? L.T("status.downloading_the_update")
+            : _notice ?? (_autoCloseAt != null ? L.T("status.fortnite_is_closed_the_counter_closes_in_30") : null);
+        var state = new MonitorState(overlay, Profiles.List(_data, _config), Profiles.Current(_data, _config)?.Key, _update, notice, _autoCloseAt != null, BuildStats())
         {
             Team = BuildTeam(),
         };
@@ -588,7 +702,7 @@ public sealed class Monitor
         if (_config.UpdateMode == "auto")
         {
             var idle = !_tracker.IsLive && !_tracker.HasPending && !_tracker.IsFinishing;
-            if (!idle || AppInfo.ExePath == null)
+            if (!idle || _services.Executable.ExePath == null)
             {
                 return false;
             }
@@ -614,7 +728,7 @@ public sealed class Monitor
         }
 
         var now = DateTime.UtcNow;
-        if (FortniteWatch.IsFortniteRunning())
+        if (_services.Game.IsFortniteRunning())
         {
             var wasOffering = _autoCloseAt != null;
             _fortniteClosedSince = null;
@@ -646,7 +760,7 @@ public sealed class Monitor
 
     private void StartOverlay()
     {
-        NativeOverlay.Start(_config.OverlayX, _config.OverlayY, _config.OverlayLocked,
+        _overlayHost.Start(_config.OverlayX, _config.OverlayY, _config.OverlayLocked, _config.OverlayScalePercent,
             (x, y) =>
             {
                 lock (_cfgGate)
@@ -664,6 +778,7 @@ public sealed class Monitor
                     SaveQuietly();
                 }
             },
+            scale => { SetOverlayScale(scale); },
             _config.OverlayVisible,
             visible =>
             {

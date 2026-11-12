@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <AssemblyName>ChestCounter.Application</AssemblyName>
+    <RootNamespace>ChestCounter</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\ChestCounter.Core\ChestCounter.Core.csproj" />
+  </ItemGroup>
+</Project>
