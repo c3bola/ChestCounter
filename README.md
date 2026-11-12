@@ -1,196 +1,296 @@
-<div align="center">
+::: {align="center"}
+[Português (Brasil)](README.ptbr.md) · **English**
+
+# Contador de Bau
 
-**Español** · [English](README.en.md)
+[![Windows 10 \|
+11](https://img.shields.io/badge/Windows-10%20%7C%2011-3a7bd5?style=flat-square)](https://www.microsoft.com/windows)
+[![.NET
+10](https://img.shields.io/badge/.NET-10-512bd4?style=flat-square)](https://dotnet.microsoft.com/)
+[![MIT
+License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 
-# Contador de cofres de Fortnite
+**Track the chests and treasures found in your Fortnite matches.**
+:::
 
-[![version](https://img.shields.io/github/v/release/xdoofy92/ChestCounter?style=flat-square&label=versión&color=e8b04b)](../../releases/latest) [![descargas](https://img.shields.io/github/downloads/xdoofy92/ChestCounter/total?style=flat-square&label=descargas&color=e8b04b)](../../releases) ![Windows 10 | 11](https://img.shields.io/badge/Windows-10%20%7C%2011-3a7bd5?style=flat-square) [![licencia](https://img.shields.io/github/license/xdoofy92/ChestCounter?style=flat-square&label=licencia&color=555)](LICENSE)
+## Overview
 
-**Cuenta cada cofre que abres en Fortnite, partida tras partida: ventana, informe, overlay sobre el juego y los cofres de tu equipo.**
+Contador de Bau (the repository and namespaces are still identified
+internally as **ChestCounter**) is a Windows desktop application that
+analyzes Fortnite replay files and records the chests and treasures
+identified in each match.
+
+The application keeps a local match history and presents statistics
+through a desktop interface, reports, and an overlay. Replay reading is
+provided by libraries included in this repository.
 
-<img src="docs/main.png" alt="Ventana principal" width="49%">&nbsp;<img src="docs/report-hero.png" alt="Informe" width="49%">
+-   **Dashboard:** totals, recent match, statistics, records, treasures,
+    and charts.
+-   **Reports:** match and statistics summaries, including chests,
+    treasures, and teammates where supported by the available data.
+-   **Overlay:** on-screen counters and integration with an OBS browser
+    source.
+-   **Profiles:** separate statistics when replays from multiple
+    Fortnite accounts are found on the same computer.
+-   **Local storage:** match history and settings remain on the
+    computer.
+-   **Privacy:** the application analyzes replay files; it does not need
+    to read or modify Fortnite process memory.
 
-[**⬇ Descargar ChestCounter.exe**](../../releases/latest) · Windows 10 / 11 · gratis · sin instalación · 10 idiomas
+> Counts depend on the information actually present in replay files. The
+> application does not reveal unopened chest locations on the map.
 
-</div>
+## Requirements
 
----
+-   Windows 10 or Windows 11.
+-   For a published release: download the executable from the Releases
+    page.
+-   For development: Git and the .NET 10 SDK.
+-   Fortnite replay recording must be enabled.
 
-ChestCounter lee las repeticiones (replays) que Fortnite guarda de cada partida y lleva la cuenta de los cofres que abres, de los **tesoros de la caza del tesoro** y, si quieres, de los cofres de tus **compañeros de equipo**. Todo se guarda en tu PC: aunque Fortnite borre los replays, tu historial se conserva.
+## Getting started
 
-- **Ventana principal**: total, última partida, hoy, mejor día, media, récord, tesoros, gráfico de 7 días y tu equipo.
-- **Informe** en el navegador, con pestañas: resumen, cofres, tesoros, partidas y compañeros.
-- **Overlay** sobre el juego y **página para OBS**.
-- **Compañeros**: con quién juegas, victorias juntos, cofres de cada uno por partida y un top.
-- **Seguro**: solo lee archivos de replay; no toca el juego ni su memoria.
+1.  Download the available release from [GitHub
+    Releases](../../releases/latest).
+2.  In Fortnite, enable **Settings → Game → Replays → Record Replays**.
+    Enable large-team replay recording if relevant to your game modes.
+3.  Run `ContadorDeBau.exe` (the intended executable name after the
+    project configuration is updated).
+4.  On first launch, follow the available options to import existing
+    replays or start counting future matches.
+5.  Keep the application running while playing. The window can be
+    minimized.
 
-> Cuenta los cofres que **tú** abriste (y los que se vio abrir a tu equipo). No muestra dónde están los cofres en el mapa.
+Counting depends on Fortnite recording the match. Matches played while
+the application is closed may be processed later if their replay files
+are still available.
 
-## Primeros pasos
+## Features
 
-1. Descarga **[`ChestCounter.exe`](../../releases/latest)**. Ese único archivo es todo lo que necesitas.
-2. En Fortnite activa *Ajustes → Juego → Repeticiones → **Grabar repeticiones*** (y *Modos de equipos grandes* si los juegas). Sin repeticiones no hay nada que leer.
-3. Ejecuta `ChestCounter.exe`.
-   > Windows puede mostrar *"Windows protegió tu PC"* porque el exe no está firmado. Haz clic en *Más información → Ejecutar de todas formas*.
-4. La bienvenida te recuerda lo de las repeticiones y, si ya tienes replays en el PC, te deja **contarlos** o empezar **solo con las próximas partidas**.
+### Dashboard
 
-<p align="center"><img src="docs/setup.png" alt="Bienvenida del primer inicio" width="520"></p>
+The dashboard presents the available statistics, such as totals, the
+current or most recent match, session data, records, averages, recent
+activity, and team information when enabled.
 
-5. Deja la ventana abierta (puedes minimizarla) mientras juegas. Durante la partida el contador lee el replay que se está grabando y suma los cofres **en directo**; al terminar, se confirman.
+### Reports
 
-> [!TIP]
-> Las partidas que juegas con el contador cerrado se cuentan la próxima vez que lo abras, mientras Fortnite no haya borrado esos replays (guarda un número limitado). Para no tener que pensar en ello, activa **Abrir con Fortnite** en Ajustes.
+The application generates local reports containing match and statistics
+information. The details shown depend on the data extracted from replays
+and the enabled settings.
 
-## La ventana principal
+### Teammates and team
 
-<p align="center"><img src="docs/main.png" alt="Ventana principal" width="680"></p>
+When teammate tracking is enabled, the application can display
+information about matches played together and teammate chest counts
+observed in replay files.
 
-- **Arriba a la izquierda**: tu total de cofres, la última partida (o la actual, en verde, mientras juegas) y la sesión.
-- **A la derecha**: hoy, el mejor día, la media, la mejor partida, el histórico (partidas guardadas y desde cuándo) y los tesoros.
-- **Últimos 7 días**: un gráfico con los cofres de cada día.
-- **Equipo** (con *Compañeros* activado): tus cofres y los de cada compañero en la partida actual o la última, el total del equipo y lo que aportan ellos.
-- **Botones**: **Overlay** (punto verde = activado), **Informe** y **Ajustes**. Si hay varias cuentas en el PC, arriba aparece un selector de perfil.
+Teammate chest counts should be treated as approximate. A replay may not
+record all activity from players outside the observation range of the
+local player.
 
-La ventana se puede redimensionar y maximizar: todo crece en proporción.
+### Overlay and OBS
 
-## El informe
+The overlay displays chest and treasure counters. OBS integration uses a
+local browser page served by the application itself.
 
-`report.html` se abre en tu navegador (botón **Informe**) y se actualiza solo. Empieza siempre en **Resumen**; arriba tienes las pestañas:
+To display the overlay over Fortnite, **Windowed Fullscreen** may be
+required because Windows does not reliably draw windows over exclusive
+fullscreen mode.
 
-| Pestaña | Qué muestra |
-|---|---|
-| **Resumen** | Total de cofres, sesión, victorias (y %), top 10, partidas, media, récord, mejor día, tesoros, gráfico de 30 días y las últimas partidas. |
-| **Cofres** | Por tipo de cofre, otros contenedores (cajas de munición, de comida, cañones; indica si suman al total) y una tabla **por modo de juego**. |
-| **Tesoros** | Cuántos, de cofres dorados, con origen seguro, % de partidas con tesoro, de dónde vienen y la lista con el momento exacto. |
-| **Partidas** | Las 100 últimas: modo, puesto (🏆 victoria, top 10 en verde), eliminaciones, cofres, tesoros y, con compañeros, el equipo. |
-| **Compañeros** | Cofres del equipo, **top de compañeros**, la tabla **por partida** y todos tus compañeros (ver abajo). |
+Check the application settings for the local overlay address and add it
+to OBS as a browser source.
 
-<p align="center"><img src="docs/report-companeros.png" alt="Pestaña Compañeros del informe" width="820"></p>
+### Settings, profiles, and updates
 
-<details>
-<summary><b>Ver las demás pestañas</b></summary>
+The application provides settings for language, replay files, overlay,
+reports, profiles, and other options available in the installed version.
+Update behavior depends on the preferences and implementation in that
+version.
 
-<p align="center"><img src="docs/report-resumen.png" alt="Resumen" width="820"></p>
-<p align="center"><img src="docs/report-cofres.png" alt="Cofres" width="820"></p>
-<p align="center"><img src="docs/report-tesoros.png" alt="Tesoros" width="820"></p>
-<p align="center"><img src="docs/report-partidas.png" alt="Partidas" width="820"></p>
+## How it works
 
-</details>
+1.  Fortnite records replay files for matches.
+2.  Contador de Bau monitors the configured folder and detects new
+    replays.
+3.  Replay-reading and analysis components extract available events and
+    statistics.
+4.  Results are saved locally and used by the dashboard and reports.
 
-Usa los colores de la ventana (oscuro, o claro si Windows está en modo claro) y se adapta al móvil.
+The application does not read, inject into, or modify Fortnite process
+memory, and it does not alter the game's installation files.
 
-## Compañeros y equipo
+The usual Fortnite replay folder is:
 
-Actívalo en **Ajustes → Compañeros en el informe** (desactivado por defecto). Verás:
-
-- **Exacto**: con quién juegas, partidas juntos y victorias juntos.
-- **Aproximado**: los cofres de cada compañero. Salen de **tu** replay, y Fortnite solo graba lo que pasa **a menos de 1.087 m de ti** (medido en replays reales). Si un compañero se aleja más, sus cofres no se cuentan: son un **mínimo (≥)**.
-- **Cofres del equipo**: tú + tus compañeros, en total y por partida, con el % que aporta cada uno; útil si buscáis un objeto aleatorio que sale de los cofres.
-- **Top de compañeros**: más cofres vistos, mejor media, récord en una partida y más victorias juntos.
-
-Con **Sumar sus cofres a tu total** (también desactivado), tu total, media, récords y overlay incluyen los cofres de tu equipo. Tu historial no cambia: al desactivarlo vuelves a ver solo los tuyos.
-
-## El overlay
-
-<p align="center"><img src="docs/overlay-espera.png" alt="Overlay entre dos partidas" width="300">&nbsp;&nbsp;<img src="docs/overlay-en-vivo.png" alt="Overlay en directo durante una partida" width="300"></p>
-
-- **Cifras grandes**: tu **total** de cofres y, en el recuadro, la partida **anterior** (o la **actual**, en directo, mientras juegas).
-- **Sesión**, **media** de la sesión, **anterior** (durante una partida) y **tesoros**.
-
-Para verlo sobre el juego, pon Fortnite en **Pantalla completa en ventana** (*Ajustes → Vídeo → Modo de ventana*): en pantalla completa exclusiva, Windows no puede dibujar nada encima. El overlay viene **desactivado**: actívalo con el botón **Overlay** o con Ctrl+Mayús+O.
-
-¿Transmites en directo? Mientras el contador está abierto, el mismo overlay está en **http://localhost:7373/** (cópialo desde **Ajustes**). En OBS, añade una **fuente de navegador** con esa dirección: tiene fondo transparente y se actualiza sola.
-
-### Atajos
-
-| Atajo | Qué hace |
-|---|---|
-| **Ctrl+Mayús+O** | Mostrar / ocultar el overlay. Funciona en cualquier sitio, incluso en el juego. |
-| **Ctrl+Mayús+L** | Bloquear / desbloquear el overlay. **Bloqueado**: el ratón lo atraviesa y no se mueve. **Desbloqueado**: arrástralo con el botón izquierdo. |
-| Clic derecho en el overlay | Ocultarlo. |
-
-## Ajustes
-
-<p align="center"><img src="docs/settings.png" alt="Ajustes" width="620"></p>
-
-- **Idioma**: por defecto el de Windows; arriba puedes elegir otro (español, inglés, portugués, ruso, francés, alemán, italiano, polaco, turco o japonés).
-- **Abrir con Fortnite**: un pequeño proceso invisible abre el contador (minimizado) cuando arranca Fortnite y lo cierra 30 s después de cerrarlo. No lee nada del juego: solo mira la lista de programas en marcha.
-- **Abrir el informe al iniciar** (desactivado por defecto).
-- **Compañeros en el informe** y **Sumar sus cofres a tu total** (ver arriba).
-- **Contar también como cofre**: cajas de munición, cajas de comida y cañones de botín (desactivado; no se borra nada al cambiarlo). Los cofres que **rompes** se cuentan siempre.
-- **Cofres antes del contador**: un estimado que se suma a tu total.
-- **Actualizaciones**, **overlay para OBS**, **carpeta de replays** y **Restablecer estadísticas** (con copia de seguridad).
-
-## Cómo funciona (y por qué es seguro)
-
-Fortnite puede grabar un **archivo de repetición** de cada partida en tu PC. ChestCounter lee esos archivos y nada más.
-
-- ✅ **Solo lee archivos de repetición**: los `.replay` de `%LOCALAPPDATA%\FortniteGame\Saved\Demos`, en modo solo lectura.
-- ✅ **Sin modificar el juego**: no toca la carpeta de instalación de Fortnite.
-- ✅ **Sin acceso a la memoria del juego**: nunca lee, escribe ni inyecta nada en el proceso de Fortnite.
-- ✅ **No envía datos**: sin inicio de sesión, sin cuenta de Epic, sin telemetría. El único acceso a la red es buscar versiones nuevas en GitHub (se puede desactivar).
-- ✅ **Ligero**: prioridad baja ("modo de eficiencia" en Windows 11) y duerme entre partidas.
-
-## Tesoros
-
-- **★★ Cofre dorado (seguro).** Cuando un cofre da un premio de la caza del tesoro (cosmético, pista musical, vehículo…), el servidor genera un cofre dorado con el **id del premio**, que la herramienta lee del replay.
-- **★ Cada tesoro recibido (momento exacto)**, con el cofre del que salió; solo cuenta si ese cofre es **tuyo**. Si el objeto no se puede identificar, aparece como **"Artilugio de tesoro"**.
-- Un tesoro que sale de algo que no es un cofre (cañón de botín, caja de munición…) se marca con ⚑.
-
-El juego solo envía ids de premios: `treasures.json` les pone nombre y se puede editar con el Bloc de notas.
-
-## Perfiles (varias cuentas en un PC)
-
-No hay nombre que escribir: se cuenta al jugador que grabó cada replay. Si hay replays de varias cuentas, cada una tiene su perfil y arriba a la derecha aparece un **desplegable** para elegir cuál se muestra.
-
-## Actualizaciones
-
-Al iniciarse, el contador busca en GitHub una versión nueva y, por defecto, la **instala sola** entre dos partidas (tu historial y tus ajustes se conservan). En Ajustes puedes elegir *Preguntar* o *Nunca* (ningún acceso a la red).
-
-## Tus datos
-
-Todo se guarda en `%APPDATA%\ChestCounter`. **Tu historial no depende de los replays**: cada partida (con sus cofres, tesoros y compañeros) se guarda en `data.json` en cuanto se lee, y todas las estadísticas salen de ahí.
-
-| Archivo | Contenido |
-|---|---|
-| `data.json` | Tu historial completo. **Haz copia de seguridad** si cambias de PC. |
-| `report.html` | El informe. |
-| `matches.csv` | Una línea por partida, para Excel o Google Sheets. |
-| `config.json` | Ajustes, perfil, carpeta de replays y posición del overlay. |
-| `treasures.json` | Nombres de los premios de la caza del tesoro. |
-| `overlay.html` | Copia del overlay (para OBS es mejor http://localhost:7373/). |
-| `errors.log` | Replays que no se pudieron leer, para adjuntar a un informe de error. |
-
-## Preguntas frecuentes
-
-**No se cuenta nada.** Comprueba que las repeticiones están activadas en Fortnite. La ventana te avisa si falta la carpeta de replays o está vacía.
-
-**¿Por qué los cofres de mis compañeros salen bajos?** Porque solo se ven los que abren a menos de 1.087 m de ti. Es un mínimo, no su total.
-
-**¿Cómo empiezo de cero?** **Ajustes → Restablecer estadísticas…** (con confirmación y copia de seguridad `data-backup-….json`).
-
-**¿Modos creativos?** Solo se cuentan las partidas de Battle Royale.
-
-**"No se puede leer esta repetición".** Una actualización de Fortnite puede cambiar el formato. Las partidas ya contadas se conservan. Abre un [issue](../../issues) y adjunta `errors.log`.
-
-**¿Una partida puede contarse dos veces?** No, aunque renombres o guardes el replay.
-
-## Opciones de línea de comandos
-
-```
-ChestCounter.exe --demos <carpeta>   otra carpeta de repeticiones
-ChestCounter.exe --data <carpeta>    otra carpeta de datos
-ChestCounter.exe --once              analiza las repeticiones terminadas y se cierra
-ChestCounter.exe --reset-config      vuelve a hacer la configuración inicial
-ChestCounter.exe --overlay-preview <archivo.png>   guarda vistas previas del overlay y se cierra
+``` text
+%LOCALAPPDATA%\FortniteGame\Saved\Demos
 ```
 
-## Compilar desde el código
+The effective location may be changed in the application settings when
+that option is available.
 
-Instala el [SDK de .NET 10](https://dotnet.microsoft.com/download/dotnet/10.0) (Windows x64) y haz doble clic en **`build.bat`**: el exe se genera en `dist\ChestCounter.exe`. GitHub Actions compila el exe en cada push y lo publica cuando se sube una etiqueta `v*`.
+## Local data and backups
 
-## Licencia y créditos
+Persistence is currently local. Remote synchronization with PostgreSQL
+and user authentication are not implemented in this stage.
 
-[MIT](LICENSE). El análisis de los replays se basa en [FortniteReplayDecompressor](https://github.com/Shiqan/FortniteReplayDecompressor) de Shiqan (MIT), ligeramente modificado: ver [`lib/PATCHES.md`](lib/PATCHES.md).
+Application data is stored in the data directory used by the
+application. The exact path and filenames may vary by version and
+startup arguments. Back up the data before moving to another computer,
+reinstalling, or performing manual maintenance.
 
-Este proyecto no está afiliado a Epic Games, ni cuenta con su respaldo ni patrocinio. Fortnite es una marca registrada de Epic Games, Inc.
+Integration with a remote API and PostgreSQL is planned future work; it
+should not be considered available until implemented and documented in a
+released version.
+
+## Command-line options
+
+The application includes argument handling for auxiliary operations such
+as selecting directories and processing replays. Refer to `Program.cs`
+in the matching source version for the exact supported parameters. Do
+not assume command-line options from older versions are still available.
+
+## Repository structure
+
+``` text
+.
+├── .github/
+│   └── workflows/                  # GitHub Actions automation
+├── docs/
+│   ├── architecture/               # Architecture documentation
+│   └── development/                # Development guidance
+├── lib/                            # Replay-reading related libraries
+├── src/
+│   ├── ChestCounter/               # Avalonia desktop application (App)
+│   │   ├── Assets/
+│   │   ├── Localization/
+│   │   ├── Platform/Windows/
+│   │   ├── Services/
+│   │   ├── ViewModels/
+│   │   └── Views/
+│   ├── ChestCounter.Application/   # Use cases and application contracts
+│   ├── ChestCounter.Core/          # Domain and core rules
+│   └── ChestCounter.Infrastructure/# Technical implementations
+├── tools/                          # Development utilities
+├── build.bat
+├── Directory.Build.props
+├── LICENSE
+├── README.md
+└── README.ptbr.md
+```
+
+Folders such as `bin`, `obj`, and `dist` are local build/distribution
+artifacts, not architectural layers.
+
+## Architecture
+
+The source code is organized into four .NET projects:
+
+  -----------------------------------------------------------------------
+  Project                             Responsibility
+  ----------------------------------- -----------------------------------
+  `ChestCounter`                      Avalonia desktop application, UI,
+                                      ViewModels, assets, and startup. It
+                                      acts as the composition root.
+
+  `ChestCounter.Application`          Use cases, operation orchestration,
+                                      and application contracts.
+
+  `ChestCounter.Core`                 Domain entities, definitions, and
+                                      core rules, independent of the UI.
+
+  `ChestCounter.Infrastructure`       Technical implementations, local
+                                      persistence, replay processing,
+                                      reporting, and integrations.
+  -----------------------------------------------------------------------
+
+### Dependency direction
+
+The intended project dependency direction is:
+
+-   `ChestCounter` references `ChestCounter.Application`,
+    `ChestCounter.Core`, and `ChestCounter.Infrastructure`.
+-   `ChestCounter.Application` references only `ChestCounter.Core`.
+-   `ChestCounter.Infrastructure` references `ChestCounter.Application`
+    and `ChestCounter.Core`.
+-   `ChestCounter.Core` does not reference the other internal projects.
+
+Application defines contracts; Infrastructure implements them; the
+desktop project wires concrete implementations during startup.
+Application must not depend on Infrastructure.
+
+Responsibility separation is still in progress. A file being located in
+a project does not by itself prove that all of its dependencies have
+been fully decoupled. See `docs/architecture/` for more detailed
+architecture notes.
+
+### Planned evolution: remote API and PostgreSQL
+
+Existing local persistence is intended to remain available. Planned work
+is to let the application send match data to a custom API, which will
+store it in a remote PostgreSQL database.
+
+The integration should reuse the data already produced by replay
+processing and preserve local operation when the API is unavailable.
+This functionality is not implemented in the current documented stage.
+
+## Development
+
+### Set up the environment
+
+1.  Install Git.
+2.  Install the .NET 10 SDK.
+3.  Clone the repository:
+
+``` bash
+git clone https://github.com/c3bola/ChestCounter.git
+cd ChestCounter
+```
+
+4.  Open the projects in an IDE that supports .NET 10 and Avalonia.
+
+The repository includes `build.bat` and a workflow under
+`.github/workflows/`. Review those files for the current build and
+distribution paths and procedures. The desktop project retains the
+internal name `ChestCounter`; the intended product/executable name is
+`ContadorDeBau`.
+
+### Projects and references
+
+Each project is an independent .NET project with its own `.csproj` file.
+When moving or adding files, check:
+
+-   Project references (`ProjectReference`).
+-   Explicit source inclusions (`Compile Include`), if used.
+-   Avalonia resources (`.axaml`), images, and fonts.
+-   `EmbeddedResource` and other resource declarations.
+-   `AssemblyName`, `RootNamespace`, and publishing settings.
+
+Do not compile the same source file into multiple assemblies. Do not
+introduce an Application-to-Infrastructure reference.
+
+### Additional documentation
+
+-   `docs/architecture/` --- architecture overview, replay processing,
+    and overlay.
+-   `docs/development/` --- environment setup and testing guidance.
+-   `lib/PATCHES.md` --- changes applied to the related libraries.
+
+## Contributing and issue reports
+
+Bug reports and suggestions are welcome through [GitHub
+Issues](../../issues).
+
+For replay-reading problems, include the error message and relevant
+application log when available. Avoid publishing replay files or
+personal data without reviewing what they contain.
+
+## License and credits
+
+This project is distributed under the [MIT License](LICENSE).
+Replay-reading and decompression libraries may have their own notices
+and terms; review the relevant license files and
+[`lib/PATCHES.md`](lib/PATCHES.md).
+
+This project is not affiliated with, endorsed, or sponsored by Epic
+Games. Fortnite is a registered trademark of Epic Games, Inc.
