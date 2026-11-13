@@ -56,6 +56,8 @@ internal sealed partial class DashboardViewModel : ObservableObject, IDisposable
             if (SetProperty(ref _state, value))
             {
                 OnPropertyChanged(nameof(HasNotice));
+                OnPropertyChanged(nameof(ShowPirateToken));
+                OnPropertyChanged(nameof(PirateTokenMessage));
                 OnPropertyChanged(nameof(ShowUpdate));
                 OnPropertyChanged(nameof(ShowKeepOpen));
                 OnPropertyChanged(nameof(HeroTotal));
@@ -89,6 +91,10 @@ internal sealed partial class DashboardViewModel : ObservableObject, IDisposable
         ? L.F("main.session_line", $"{session.Value} {L.T(session.Value == L.N(1) ? "common.chest" : "common.chests")}")
         : L.F("main.session_line", "—");
     public bool HasNotice => !string.IsNullOrEmpty(State?.Notice);
+    public bool ShowPirateToken => State?.PirateTokenLive == true || State?.Stats.LastMatch?.PirateToken == true;
+    public string PirateTokenMessage => State?.PirateTokenLive == true
+        ? L.T("main.pirate_token_current")
+        : L.T("main.pirate_token_last");
     public bool ShowUpdate => State?.Update != null;
     public bool ShowKeepOpen => State?.AutoCloseOffer == true;
     public string Notice => State?.Notice ?? "";

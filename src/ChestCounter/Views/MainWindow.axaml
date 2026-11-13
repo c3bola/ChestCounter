@@ -10,6 +10,11 @@
   <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
     <StackPanel Margin="14,0,14,18" Spacing="12">
       <local:DashboardHeader />
+      <Border IsVisible="{Binding ShowPirateToken}" Background="#332514" BorderBrush="#FFB84D"
+              BorderThickness="1" CornerRadius="12" Padding="12">
+        <TextBlock Text="{Binding PirateTokenMessage}" Foreground="#FFB84D" FontWeight="Bold"
+                   TextWrapping="Wrap" />
+      </Border>
       <Grid x:Name="DashboardColumns" ColumnDefinitions="1.03*,1*" RowDefinitions="Auto"
             ColumnSpacing="14" RowSpacing="12" SizeChanged="OnDashboardSizeChanged">
         <StackPanel x:Name="MainPanels" Grid.Column="0" Spacing="10">

@@ -12,6 +12,7 @@ internal sealed partial class SettingsViewModel : ObservableObject
     private bool _openReportOnStart;
     private bool _showTeammates;
     private bool _countTeammates;
+    private bool _countTeammateTreasures;
     private bool _countAmmoBoxes;
     private bool _countFoodBoxes;
     private bool _countLootCannons;
@@ -29,6 +30,7 @@ internal sealed partial class SettingsViewModel : ObservableObject
         _openReportOnStart = config.OpenReportOnStart;
         _showTeammates = config.ShowTeammates;
         _countTeammates = config.CountTeammateChests;
+        _countTeammateTreasures = config.CountTeammateTreasures;
         _countAmmoBoxes = config.CountAmmoBoxes;
         _countFoodBoxes = config.CountFoodBoxes;
         _countLootCannons = config.CountLootCannons;
@@ -106,6 +108,7 @@ internal sealed partial class SettingsViewModel : ObservableObject
     public string OpenReportLabel => L.T("settings.open_the_report_at_startup");
     public string TeammatesLabel => L.T("settings.teammates_in_the_report");
     public string CountTeammatesLabel => L.T("settings.add_their_chests_to_your_total");
+    public string CountTeammateTreasuresLabel => L.T("settings.count_teammate_treasures");
     public string AmmoBoxesLabel => L.T("settings.ammo_boxes");
     public string FoodBoxesLabel => L.T("settings.food_boxes");
     public string LootCannonsLabel => L.T("settings.loot_cannons");
@@ -237,6 +240,18 @@ internal sealed partial class SettingsViewModel : ObservableObject
                 return;
             }
             ApplyCountTeammates(value);
+        }
+    }
+
+    public bool CountTeammateTreasures
+    {
+        get => _countTeammateTreasures;
+        set
+        {
+            if (SetProperty(ref _countTeammateTreasures, value))
+            {
+                _runtime.Monitor.SetCountTeammateTreasures(value);
+            }
         }
     }
 

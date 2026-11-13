@@ -27,6 +27,7 @@
             <CheckBox Content="{Binding OpenReportLabel}" IsChecked="{Binding OpenReportOnStart}" />
             <CheckBox Content="{Binding TeammatesLabel}" IsChecked="{Binding ShowTeammates}" />
             <CheckBox Content="{Binding CountTeammatesLabel}" IsChecked="{Binding CountTeammates}" />
+            <CheckBox Content="{Binding CountTeammateTreasuresLabel}" IsChecked="{Binding CountTeammateTreasures}" />
           </StackPanel>
         </Border>
         <Border Background="{StaticResource CardBackground}" CornerRadius="14" Padding="14">

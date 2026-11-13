@@ -140,6 +140,7 @@ public static class L
         ["Buried chest"] = "items.buried_chest",
         ["Extraction / relic chest"] = "items.extraction_relic_chest",
         ["Spirit poster chest"] = "items.spirit_poster_chest",
+        ["Spirit wanted poster"] = "items.spirit_wanted_poster",
         ["Other chest"] = "items.other_chest",
         ["Loot cannon"] = "items.loot_cannon",
         ["Ammo box"] = "items.ammo_box",

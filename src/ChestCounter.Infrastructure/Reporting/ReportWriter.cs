@@ -424,7 +424,7 @@ public static class ReportWriter
 
         // ---- Datos que comparten varias pestañas -----------------------------------------------------
         var extraKinds = config.ExtraKinds();
-        var treasureRows = matches.SelectMany(m => m.TreasureFinds.Select(f => (m, f))).ToList();
+        var treasureRows = matches.SelectMany(m => m.AllTreasureFinds.Select(f => (m, f))).ToList();
         (string Html, int Count)? mates = config.ShowTeammates ? TeammatesPanel(matches, extraKinds, N) : null;
         var top10 = matches.Count(m => m.Placement is > 1 and <= 10);
         var bestDay = matches.GroupBy(m => When(m).Date).Select(g => (Day: g.Key, Chests: g.Sum(m => m.ChestsOpened)))
@@ -596,6 +596,10 @@ public static class ReportWriter
 
         // ================================ Tesoros ================================
         sb.Append("""<div class="panel" id="t-tesoros" role="tabpanel" aria-labelledby="tab-tesoros">""");
+        var tokenCount = treasureRows.Count(row => row.f.IsPirateToken);
+        sb.Append($"<div class=\"callout\"><span class=\"ic\">★</span><div>{(tokenCount > 0
+            ? L.F("report.pirate_token_detected", N(tokenCount))
+            : L.T("report.pirate_token_not_detected"))}</div></div>");
         if (treasureRows.Count > 0)
         {
             var unusual = treasureRows.Where(r => !r.f.SourceIsChest).ToList();
@@ -608,12 +612,20 @@ public static class ReportWriter
             var golden = treasureRows.Count(r => r.f.FromGoldenChest);
             var certain = treasureRows.Count(r => r.f.SourceCertain);
             var treasureMatches = treasureRows.Select(r => r.m).Distinct().Count();
+            var own = treasureRows.Count(r => r.f.Scope == "own");
+            var team = treasureRows.Count(r => r.f.Scope == "team");
+            var nearby = treasureRows.Count(r => r.f.Scope == "nearby");
+            var unknown = treasureRows.Count(r => r.f.Scope == "unknown");
             sb.Append($"""
                 <div class="minis">
                   <div class="mini-kpi"><b class="ros">{N(treasureRows.Count)}</b><span>{L.T("report.treasures_in_total")}</span></div>
                   <div class="mini-kpi"><b class="acc">{N(golden)}</b><span>{L.T("report.from_golden_chests")}</span></div>
                   <div class="mini-kpi"><b>{N(certain)}</b><span>{L.T("report.with_a_certain_source")}</span></div>
                   <div class="mini-kpi"><b>{(matches.Count > 0 ? (100.0 * treasureMatches / matches.Count).ToString("0", Loc) : "0")} %</b><span>{L.T("report.of_matches_with_a_treasure")}</span></div>
+                  <div class="mini-kpi"><b>{N(own)}</b><span>{L.T("report.treasure_scope_own")}</span></div>
+                  <div class="mini-kpi"><b>{N(team)}</b><span>{L.T("report.treasure_scope_team")}</span></div>
+                  <div class="mini-kpi"><b>{N(nearby)}</b><span>{L.T("report.treasure_scope_nearby")}</span></div>
+                  <div class="mini-kpi"><b>{N(unknown)}</b><span>{L.T("report.treasure_scope_unknown")}</span></div>
                 </div>
                 """);
 
@@ -629,7 +641,7 @@ public static class ReportWriter
 
             sb.Append($"""
                 <section><div class="sh"><h2>{L.T("report.treasures_obtained")}</h2><span class="meta">{L.Count(treasureRows.Count, "common.treasure", "common.treasures")}</span></div>
-                <div class="card tw"><table><thead><tr><th>{L.T("report.match")}</th><th>{L.T("items.treasure")}</th><th>{L.T("report.time")}</th><th>{L.T("report.source")}</th></tr></thead><tbody>
+                <div class="card tw"><table><thead><tr><th>{L.T("report.match")}</th><th>{L.T("items.treasure")}</th><th>{L.T("report.time")}</th><th>{L.T("report.source")}</th><th>{L.T("report.scope")}</th></tr></thead><tbody>
                 """);
             foreach (var (m, f) in treasureRows)
             {
@@ -641,7 +653,15 @@ public static class ReportWriter
                     + (f.AlsoPossible.Count > 0
                         ? $"<div class=\"sm\">{H(L.F("report.also_possible", string.Join(", ", f.AlsoPossible.Select(L.Name))))}</div>"
                         : "");
-                sb.Append($"<tr{(f.SourceIsChest ? "" : " class=\"unusual\"")}><td class=\"nw\">{L.DateTimeShort(When(m))}<div class=\"sm\">{H(Pretty.Playlist(m.Playlist))}</div></td><td><span class=\"star\">{(f.FromGoldenChest ? "★★" : "★")} {H(f.DisplayName)}</span>{id}</td><td class=\"nw num\">{when}</td><td>{source}</td></tr>");
+                var scopeKey = f.Scope switch
+                {
+                    "own" => "report.treasure_scope_own",
+                    "team" => "report.treasure_scope_team",
+                    "nearby" => "report.treasure_scope_nearby",
+                    _ => "report.treasure_scope_unknown",
+                };
+                var finder = string.IsNullOrWhiteSpace(f.Finder) ? "" : $"<div class=\"sm\">{H(f.Finder)}</div>";
+                sb.Append($"<tr{(f.SourceIsChest ? "" : " class=\"unusual\"")}><td class=\"nw\">{L.DateTimeShort(When(m))}<div class=\"sm\">{H(Pretty.Playlist(m.Playlist))}</div></td><td><span class=\"star\">{(f.FromGoldenChest ? "★★" : "★")} {H(f.DisplayName)}</span>{id}{finder}</td><td class=\"nw num\">{when}</td><td>{source}</td><td>{L.T(scopeKey)}</td></tr>");
             }
             sb.Append("</tbody></table></div></section>");
         }
@@ -992,7 +1012,7 @@ public static class ReportWriter
         var sb = new StringBuilder();
         sb.AppendLine(L.T("report.date_mode_player_placement_players_chests_ammo_b"));
 
-        foreach (var m in data.Matches.Where(Profiles.IsSupportedVersion).OrderBy(When))
+        foreach (var m in data.Matches.Where(m => Profiles.IsSupportedVersion(m) && Profiles.IsBattleRoyalePlaylist(m.Playlist)).OrderBy(When))
         {
             var t = string.Join(" + ", m.TreasureFinds.Select(f => f.DisplayName));
             sb.AppendLine(string.Join(";",
