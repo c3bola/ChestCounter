@@ -27,7 +27,7 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
     // Treasure hunt items do not drop on the ground: they go straight into the inventory.
     // They only show up in the replay when the player equips them (a weapon/gizmo actor is spawned).
     private static readonly Regex TreasureActor = new(
-        @"FlameCeleb|RelicExtractor|RelicFinder|LuckyLocator|SmugglerExtractionKey|ExtractionAccelerat",
+        @"FlameCeleb|RelicExtractor|RelicFinder|LuckyLocator|SmugglerExtractionKey|ExtractionAccelerat|PirateShop|DelilahShop",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     private static readonly Regex UaidSuffix = new(@"_UAID_.*$", RegexOptions.Compiled);
@@ -55,6 +55,7 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
 
             return path.Contains("/Containers/", StringComparison.OrdinalIgnoreCase)
                    || last.Contains("Chest", StringComparison.OrdinalIgnoreCase)
+                   || last.Contains("SpritePoster", StringComparison.OrdinalIgnoreCase)
                 ? GenericContainer.GroupPath
                 : null;
         };
@@ -75,7 +76,7 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
     private readonly List<EquipEvent> _equips = new();
     private readonly List<PrizeEvent> _prizes = new();
     private readonly Dictionary<string, float> _firstExport = new();
-    private static readonly Regex TrackedExport = new(@"TreasureHandler|WID_(FlameCeleb|RelicExtractor|RelicFinder|LuckyLocator|SmugglerExtractionKey)", RegexOptions.Compiled);
+    private static readonly Regex TrackedExport = new(@"TreasureHandler|WID_(FlameCeleb|RelicExtractor|RelicFinder|LuckyLocator|SmugglerExtractionKey|PirateShop|DelilahShop)", RegexOptions.Compiled);
     private readonly HashSet<uint> _prizeChannelsSeen = new();
     private readonly HashSet<uint> _equipChannelsSeen = new();
     private readonly Dictionary<uint, uint> _pawnToPlayerState = new();
@@ -89,7 +90,7 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
     private readonly List<GrantEvent> _grants = new();
 
     /// <summary>Bump when the analysis changes so that existing replays are re-analyzed.</summary>
-    public const int CurrentVersion = 13;
+    public const int CurrentVersion = 14;
 
     private static readonly bool ProbeDebug = Environment.GetEnvironmentVariable("CHESTCOUNTER_DEBUG") == "4";
 
@@ -517,6 +518,33 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
         var isRecorderTarget = recorderPs != null && targetPlayerStates.Contains(recorderPs.Value);
         var targetPawns = _pawnToPlayerState.Where(kv => targetPlayerStates.Contains(kv.Value)).Select(kv => kv.Key).ToHashSet();
 
+        string? PlayerNameForPawn(uint? pawn) => pawn is uint p
+            && _pawnToPlayerState.TryGetValue(p, out var ps)
+            && _playerStateToPlayerId.TryGetValue(ps, out var pid)
+                ? players.FirstOrDefault(player => player.Id == pid)?.PlayerName
+                : null;
+
+        string ScopeForPawn(uint? pawn)
+        {
+            if (pawn is uint p && targetPawns.Contains(p))
+            {
+                return "own";
+            }
+            if (pawn is uint q
+                && _pawnToPlayerState.TryGetValue(q, out var state)
+                && _playerStateToPlayerId.TryGetValue(state, out var playerId)
+                && target?.TeamIndex is int team
+                && players.Any(player => player.Id == playerId && player.TeamIndex == team))
+            {
+                return "team";
+            }
+            return pawn is uint knownPawn
+                   && _pawnToPlayerState.TryGetValue(knownPawn, out var knownState)
+                   && _playerStateToPlayerId.ContainsKey(knownState)
+                ? "nearby"
+                : "unknown";
+        }
+
         // --- Everything the target searched / interacted with ------------------------------------
         var interactions = _searches
             .Where(s => s.SearcherPawn is uint p && targetPawns.Contains(p))
@@ -634,12 +662,17 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
         var finds = new List<TreasureFind>();
 
         // 1) Golden treasure chest: the server spawns an animated chest carrying the prize id and its source container. Certain.
-        foreach (var pz in _prizes.Where(p => p.Pawn is uint pawn && targetPawns.Contains(pawn)))
+        foreach (var pz in _prizes.Where(_ => target != null))
         {
             var label = CleanName(pz.Container);
             var kind = string.IsNullOrEmpty(label) ? "unknown" : ChestKinds.Classify(label);
             finds.Add(new TreasureFind
             {
+                Scope = ScopeForPawn(pz.Pawn),
+                Finder = PlayerNameForPawn(pz.Pawn),
+                Evidence = "golden-prize",
+                IsPirateToken = TreasureNames.IsPirateToken(pz.PrizeId)
+                    || TreasureNames.IsPirateToken(TreasureNames.Friendly(pz.PrizeId)),
                 Item = TreasureNames.Friendly(pz.PrizeId),
                 RawItem = pz.PrizeId,
                 PrizeId = pz.PrizeId,
@@ -650,7 +683,7 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
                 SourceKind = kind,
                 SourceBlueprint = label,
                 SourceIsChest = ChestKinds.IsChest(kind),
-                SourceCertain = true,
+                SourceCertain = !string.IsNullOrEmpty(label),
             });
         }
 
@@ -667,6 +700,7 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
                 {
                     finds.Add(new TreasureFind
                     {
+                        Evidence = "container-pickup",
                         Item = item, RawItem = item, ObtainedAtSeconds = chest.TimeSeconds,
                         SourceKind = chest.Kind, SourceBlueprint = chest.Blueprint, SourceIsChest = true, SourceCertain = true,
                     });
@@ -674,8 +708,8 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
             }
         }
         // 4) Prize handlers: every treasure received grants a "GA_TreasureHandler_*" ability on the player state of
-        //    the recording player (exact time, one grant per treasure). Counted only if the chest opened/destroyed at
-        //    that moment is the target's own (not a teammate's: treasures are shared with the team).
+        //    the recording player (exact time, one grant per treasure). A nearby teammate's interaction can identify
+        //    a shared team reward; the replay may not contain the teammate's distant chest interaction.
         //    Fallback when no grant could be decoded: first export of the handler class (first treasure only).
         var handlerTimes = _grants
             .Where(g => targetPlayerStates.Contains(g.PlayerStateActor))
@@ -693,15 +727,16 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
             var h = handlerTimes[hi];
             var nextHandler = hi + 1 < handlerTimes.Count ? handlerTimes[hi + 1] : float.MaxValue;
             var closest = _searches
-                .Where(x => x.Time >= h - 3 && x.Time <= h + 2)
+                .Where(x => x.Time >= h - 3 && x.Time <= h + 2 && (ScopeForPawn(x.SearcherPawn) is "own" or "team"))
                 .OrderBy(x => Math.Abs(x.Time - h))
                 .FirstOrDefault();
-            var mine = closest != null && closest.SearcherPawn is uint cp && targetPawns.Contains(cp);
-            var golden = finds.FirstOrDefault(f => f.FromGoldenChest && f.ObtainedAtSeconds is float g && Math.Abs(g - h) <= 5);
+            var golden = finds.FirstOrDefault(f => (f.Scope is "own" or "team")
+                && f.FromGoldenChest && f.ObtainedAtSeconds is float g && Math.Abs(g - h) <= 5);
 
-            if (mine && golden == null)
+            if (golden == null && (closest != null || _grants.Any(grant =>
+                    targetPlayerStates.Contains(grant.PlayerStateActor) && grant.Time == h)))
             {
-                var kind = ChestKinds.Classify(closest!.Label);
+                var kind = closest == null ? "unknown" : ChestKinds.Classify(closest.Label);
 
                 // Item identity: an item first sent at that exact moment, otherwise the only treasure item the
                 // target later had in hand (if there is exactly one kind).
@@ -724,6 +759,14 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
 
                 finds.Add(new TreasureFind
                 {
+                    Scope = closest == null ? "team" : ScopeForPawn(closest.SearcherPawn),
+                    Finder = PlayerNameForPawn(closest?.SearcherPawn),
+                    Evidence = _grants.Any(grant => targetPlayerStates.Contains(grant.PlayerStateActor) && grant.Time == h)
+                        ? "recipient-handler"
+                        : "handler-export",
+                    IsPirateToken = item != null
+                        && TreasureNames.IsPirateToken(item)
+                        && _grants.Any(grant => targetPlayerStates.Contains(grant.PlayerStateActor) && grant.Time == h),
                     Item = itemName ?? TreasureNames.UnknownGizmo,
 
                     RawItem = item ?? "GA_TreasureHandler",
@@ -731,13 +774,60 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
                     ObtainedAtSeconds = hr,
                     TimeExact = true,
                     SourceKind = kind,
-                    SourceBlueprint = closest.Label,
+                    SourceBlueprint = closest?.Label ?? "",
                     SourceIsChest = ChestKinds.IsChest(kind),
-                    SourceCertain = true,
-                    SourceDestroyed = closest.Destroyed,
+                    SourceCertain = false,
+                    SourceDestroyed = closest?.Destroyed == true,
                     FromPrizeHandler = true,
                 });
             }
+        }
+
+        foreach (var grant in _grants.Where(grant => target != null && !targetPlayerStates.Contains(grant.PlayerStateActor)))
+        {
+            if (!_playerStateToPlayerId.TryGetValue(grant.PlayerStateActor, out var playerId))
+            {
+                continue;
+            }
+            var recipient = players.FirstOrDefault(player => player.Id == playerId);
+            if (recipient == null || target?.TeamIndex is int teamIndex && recipient.TeamIndex == teamIndex)
+            {
+                continue;
+            }
+            var recipientPawns = _pawnToPlayerState
+                .Where(pair => pair.Value == grant.PlayerStateActor)
+                .Select(pair => pair.Key)
+                .ToHashSet();
+            if (finds.Any(find => find.FromGoldenChest
+                && find.Finder == recipient.PlayerName
+                && Math.Abs((find.ObtainedAtSeconds ?? -100) - grant.Time) <= 5))
+            {
+                continue;
+            }
+            var source = _searches
+                .Where(search => search.SearcherPawn is uint pawn
+                    && recipientPawns.Contains(pawn)
+                    && Math.Abs(search.Time - grant.Time) <= 2)
+                .OrderBy(search => Math.Abs(search.Time - grant.Time))
+                .FirstOrDefault();
+            var kind = source == null ? "unknown" : ChestKinds.Classify(source.Label);
+            finds.Add(new TreasureFind
+            {
+                Scope = "nearby",
+                Finder = recipient.PlayerName,
+                Evidence = "recipient-handler",
+                Item = TreasureNames.UnknownGizmo,
+                RawItem = grant.Handler,
+                ObtainedAtSeconds = grant.Time,
+                IsPirateToken = TreasureNames.IsPirateToken(grant.Handler),
+                TimeExact = true,
+                SourceKind = kind,
+                SourceBlueprint = source?.Label ?? "",
+                SourceIsChest = ChestKinds.IsChest(kind),
+                SourceCertain = false,
+                SourceDestroyed = source?.Destroyed == true,
+                FromPrizeHandler = true,
+            });
         }
 
         finds.Sort((a, b) => (a.ObtainedAtSeconds ?? float.MaxValue).CompareTo(b.ObtainedAtSeconds ?? float.MaxValue));
@@ -769,9 +859,10 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
             OtherContainersOpened = others.Where(kv => kv.Key != ChestKinds.AmmoBox).Sum(kv => kv.Value),
             OtherInteractions = others,
             AnalyzerVersion = CurrentVersion,
-            IsBattleRoyale = !string.IsNullOrEmpty(replay.GameData?.CurrentPlaylist) || chests.Count > 0,
+            IsBattleRoyale = Profiles.IsBattleRoyalePlaylist(replay.GameData?.CurrentPlaylist),
             Chests = chests,
-            TreasureFinds = finds,
+            TreasureFinds = finds.Where(find => find.Scope == "own").ToList(),
+            NearbyTreasureFinds = finds.Where(find => find.Scope != "own").ToList(),
             Teammates = teammates,
         };
     }

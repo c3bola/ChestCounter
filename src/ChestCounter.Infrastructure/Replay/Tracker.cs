@@ -292,7 +292,7 @@ public sealed class Tracker : IMonitorTracking
             try { _store.SaveConfig(_config); } catch { /* ignore */ }
         }
 
-        var newIds = _store.RegisterPrizeIds(record.TreasureFinds.Where(f => f.PrizeId != null).Select(f => f.PrizeId!));
+        var newIds = _store.RegisterPrizeIds(record.AllTreasureFinds.Where(f => f.PrizeId != null).Select(f => f.PrizeId!));
         return new Outcome(record, Updated: existing != null, NewPrizeIds: newIds);
     }
 
@@ -513,14 +513,18 @@ public sealed class Tracker : IMonitorTracking
 
         var before = LiveMatch;
         LiveMatch = record;
-        var changed = before?.ChestsOpened != LiveMatch?.ChestsOpened || before?.TreasureFinds.Count != LiveMatch?.TreasureFinds.Count || (before == null) != (LiveMatch == null);
+        var changed = before?.ChestsOpened != LiveMatch?.ChestsOpened
+            || before?.AllTreasureFinds.Count() != LiveMatch?.AllTreasureFinds.Count()
+            || before?.PirateTokenSeen != LiveMatch?.PirateTokenSeen
+            || (before == null) != (LiveMatch == null);
         if (changed && LiveMatch != null)
         {
             Console.ForegroundColor = ConsoleColor.DarkGray;
-            var message = LiveMatch.TreasureFinds.Count > 0
+            var liveTreasures = LiveMatch.AllTreasureFinds.Count();
+            var message = liveTreasures > 0
                 ? L.F("tracker.live_summary_treasures", DateTime.Now,
                     L.Count(LiveMatch.ChestsOpened, "common.chest", "common.chests"),
-                    L.Count(LiveMatch.TreasureFinds.Count, "common.treasure", "common.treasures"))
+                    L.Count(liveTreasures, "common.treasure", "common.treasures"))
                 : L.F("tracker.live_summary", DateTime.Now,
                     L.Count(LiveMatch.ChestsOpened, "common.chest", "common.chests"));
             Console.WriteLine(message);

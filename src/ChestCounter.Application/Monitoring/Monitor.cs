@@ -7,6 +7,7 @@ public sealed record MonitorState(OverlayState Overlay, IReadOnlyList<Profile> P
 {
     /// <summary>Equipo de la partida en curso o de la última (null si «Compañeros» está desactivado).</summary>
     public TeamSummary? Team { get; init; }
+    public bool PirateTokenLive { get; init; }
 }
 
 /// <summary>Un compañero y los cofres que se le vieron abrir (un mínimo).</summary>
@@ -46,7 +47,7 @@ public sealed record ChestStats(int Matches, double Average, int BestMatch, int 
 }
 
 /// <summary>Cifras de la última partida: cofres abiertos (incluidos los destruidos), tesoros, puesto y eliminaciones.</summary>
-public sealed record LastMatchSummary(int Chests, int Destroyed, int Treasures, int? Placement, int? Players, int? Eliminations);
+public sealed record LastMatchSummary(int Chests, int Destroyed, int Treasures, int? Placement, int? Players, int? Eliminations, bool PirateToken = false);
 
 /// <summary>Cofres de un día concreto.</summary>
 public sealed record DayChests(DateTime Day, int Chests);
@@ -224,6 +225,12 @@ public sealed class Monitor
         Change(c => c.CountTeammateChests = count);
     }
 
+    public void SetCountTeammateTreasures(bool count)
+    {
+        _reportRequested = true;
+        Change(c => c.CountTeammateTreasures = count);
+    }
+
     /// <summary>Contar solo desde una fecha (null = todas las partidas). Rehace el informe enseguida.</summary>
     public void SetCountFrom(DateTime? from)
     {
@@ -241,7 +248,9 @@ public sealed class Monitor
         {
             var key = Profiles.Current(_data, _config)?.Key;
             return _data.Matches.ToList()
-                .Where(m => (key == null || Profiles.Key(m) == key) && Profiles.IsSupportedVersion(m))
+                .Where(m => (key == null || Profiles.Key(m) == key)
+                    && Profiles.IsSupportedVersion(m)
+                    && Profiles.IsBattleRoyalePlaylist(m.Playlist))
                 .GroupBy(Profiles.Day)
                 .OrderByDescending(g => g.Key)
                 .Select(g => (g.Key, g.Count()))
@@ -585,6 +594,10 @@ public sealed class Monitor
         var state = new MonitorState(overlay, Profiles.List(_data, _config), Profiles.Current(_data, _config)?.Key, _update, notice, _autoCloseAt != null, BuildStats())
         {
             Team = BuildTeam(),
+            PirateTokenLive = _tracker.IsLive
+                && _tracker.LiveMatch != null
+                && Profiles.Counted(_tracker.LiveMatch, _config)
+                && Profiles.Adjust(_tracker.LiveMatch, _config)!.PirateTokenSeen,
         };
         Changed?.Invoke(state);
     }
@@ -666,7 +679,7 @@ public sealed class Monitor
             return null;
         }
         return new LastMatchSummary(m.ChestsOpened, m.Chests.Count(c => c.Destroyed), m.TreasureFinds.Count,
-            m.Placement, m.TotalPlayers, m.Eliminations);
+            m.Placement, m.TotalPlayers, m.Eliminations, m.PirateTokenSeen);
     }
 
     /// <summary>Cofres de los últimos 7 días del perfil mostrado (todas sus partidas, no solo las 100 últimas).</summary>

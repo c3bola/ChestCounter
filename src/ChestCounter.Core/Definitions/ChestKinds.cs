@@ -7,6 +7,7 @@ public static class ChestKinds
     public const string Buried = "Buried chest";
     public const string Extraction = "Extraction / relic chest";
     public const string PosterChest = "Spirit poster chest";
+    public const string Poster = "Spirit wanted poster";
     public const string Other = "Other chest";
 
     public const string Cannon = "Loot cannon";
@@ -26,6 +27,7 @@ public static class ChestKinds
         if (b.Contains("foodbox") || b.Contains("food_box")) return FoodBox;
         if (b.Contains("rarechest") || b.Contains("legendary") || b.Contains("rare_chest")) return Rare;
         if (b.Contains("buried")) return Buried;
+        if ((b.Contains("spriteposter") || b.Contains("wantedposter") || b.Contains("wanted_poster")) && !b.Contains("chest")) return Poster;
         if (b.Contains("spriteposter") || b.Contains("booty")) return PosterChest;
         if (b.Contains("relic") || b.Contains("extraction")) return Extraction;
         if (b.Contains("tiered_chest") || b.Contains("normalchest") || b.Contains("standardchest")) return Normal;

@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 namespace ChestCounter;
 
 public static class TreasureNames
@@ -7,6 +9,9 @@ public static class TreasureNames
     public const string UnknownPrefix = "Unknown:";
     public const string UnknownGizmo = "Treasure gizmo";
     private const string OldUnknownPrefix = "Inconnu:";
+
+    public static bool IsPirateToken(string item) =>
+        Regex.IsMatch(item, @"DelilahShop|(?=.*(?:pirate|pirata))(?=.*(?:token|shop|loja|tienda|boutique|jeton|acceso))", RegexOptions.IgnoreCase);
 
     public static string Friendly(string item)
     {
