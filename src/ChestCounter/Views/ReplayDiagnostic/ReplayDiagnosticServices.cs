@@ -1,9 +1,12 @@
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using FortniteReplayReader.Models;
+using Unreal.Core.Models.Enums;
 
 namespace ChestCounter;
 
@@ -165,6 +168,98 @@ internal static class ReplayDiagnosticTranscoder
         match.ParserVersion = typeof(FortniteReplayReader.ReplayReader).Assembly.GetName().Version?.ToString() ?? "0.0.0";
         return match;
     }
+}
+
+internal sealed record ReplayDiagnosticParsingResult(
+    ParseMode Mode,
+    string FileName,
+    DateTimeOffset ExecutedAt,
+    TimeSpan Duration,
+    string Json,
+    int JsonSizeBytes,
+    int EventCount);
+
+internal enum ReplayDiagnosticParsingStage
+{
+    FileAccess,
+    ParserInitialization,
+    ReadDecodeParseAndBuild,
+    JsonSerialization,
+    ResultSummary,
+}
+
+internal sealed class ReplayDiagnosticParsingException(
+    ParseMode mode,
+    ReplayDiagnosticParsingStage stage,
+    Exception innerException)
+    : Exception($"Replay parsing mode {mode}; stage: {stage}.", innerException)
+{
+    public ReplayDiagnosticParsingStage Stage { get; } = stage;
+}
+
+internal static class ReplayDiagnosticParsingTranscoder
+{
+    private static readonly JsonSerializerOptions Json = new()
+    {
+        WriteIndented = true,
+        NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals,
+    };
+
+    public static Task<ReplayDiagnosticParsingResult> TranscodeAsync(FileInfo selectedFile, ParseMode mode) =>
+        Task.Run(() => Transcode(selectedFile, mode));
+
+    private static ReplayDiagnosticParsingResult Transcode(FileInfo selectedFile, ParseMode mode)
+    {
+        var stage = ReplayDiagnosticParsingStage.FileAccess;
+        try
+        {
+            var file = ReplayDiagnosticFileService.Load(selectedFile.FullName);
+            var executedAt = DateTimeOffset.Now;
+            var stopwatch = Stopwatch.StartNew();
+            FortniteReplay replay;
+            using (var stream = new FileStream(
+                       file.FullName,
+                       FileMode.Open,
+                       FileAccess.Read,
+                       FileShare.ReadWrite | FileShare.Delete,
+                       81920,
+                       FileOptions.SequentialScan))
+            {
+                stage = ReplayDiagnosticParsingStage.ParserInitialization;
+                if (mode is not (ParseMode.EventsOnly or ParseMode.Minimal or ParseMode.Normal or ParseMode.Full))
+                {
+                    throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unsupported replay diagnostic parsing mode.");
+                }
+                var reader = new FortniteReplayReader.ReplayReader(parseMode: mode);
+
+                stage = ReplayDiagnosticParsingStage.ReadDecodeParseAndBuild;
+                replay = reader.ReadReplay(stream);
+            }
+
+            stage = ReplayDiagnosticParsingStage.JsonSerialization;
+            var json = SerializeReplay(replay);
+            stage = ReplayDiagnosticParsingStage.ResultSummary;
+            stopwatch.Stop();
+            var eventCount = replay.Eliminations.Count
+                + (replay.Stats == null ? 0 : 1)
+                + (replay.TeamStats == null ? 0 : 1);
+
+            return new ReplayDiagnosticParsingResult(
+                mode,
+                file.Name,
+                executedAt,
+                stopwatch.Elapsed,
+                json,
+                Encoding.UTF8.GetByteCount(json),
+                eventCount);
+        }
+        catch (Exception ex)
+        {
+            throw new ReplayDiagnosticParsingException(mode, stage, ex);
+        }
+    }
+
+    internal static string SerializeReplay(FortniteReplay replay) => JsonSerializer.Serialize(replay, Json);
 }
 
 internal sealed record ReplayDiagnosticPreparedData(

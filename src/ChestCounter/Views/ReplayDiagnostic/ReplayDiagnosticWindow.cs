@@ -7,11 +7,20 @@ using Avalonia.Input.Platform;
 using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
+using Unreal.Core.Models.Enums;
 
 namespace ChestCounter;
 
 internal sealed class ReplayDiagnosticWindow : Window
 {
+    private static readonly ParseMode[] ParsingModes =
+    [
+        ParseMode.EventsOnly,
+        ParseMode.Minimal,
+        ParseMode.Normal,
+        ParseMode.Full,
+    ];
+
     private readonly RuntimeContext _runtime;
     private readonly TextBox _path = new() { IsReadOnly = true };
     private readonly TextBlock _fileDetails = new() { TextWrapping = Avalonia.Media.TextWrapping.Wrap };
@@ -21,12 +30,20 @@ internal sealed class ReplayDiagnosticWindow : Window
     private readonly TextBox _preSendOutput = CreateOutputBox();
     private readonly TextBox _responseOutput = CreateOutputBox();
     private readonly TextBox _logsOutput = CreateOutputBox();
+    private readonly TextBox _parsingOutput = CreateOutputBox();
+    private readonly TextBlock _parsingStatus = new() { TextWrapping = Avalonia.Media.TextWrapping.Wrap };
+    private readonly TextBlock _parsingSummary = new() { TextWrapping = Avalonia.Media.TextWrapping.Wrap };
+    private readonly ComboBox _parsingResultSelector = new() { MinWidth = 180, IsEnabled = false };
     private readonly Button _loadButton = new() { Content = "Carregar" };
     private readonly Button _readButton = new() { Content = "Ler arquivo", IsEnabled = false };
     private readonly Button _transcodeButton = new() { Content = "Transcodificar arquivo", IsEnabled = false };
     private readonly Button _preSendButton = new() { Content = "Pré-envio", IsEnabled = false };
     private readonly Button _sendButton = new() { Content = "Enviar", IsEnabled = false };
     private readonly Button _copyJsonButton = new() { Content = "Copiar JSON de processamento", IsEnabled = false };
+    private readonly Button _copyParsingJsonButton = new() { Content = L.T("replay.parsing.copy"), IsEnabled = false };
+    private readonly Button _saveParsingJsonButton = new() { Content = L.T("replay.parsing.save"), IsEnabled = false };
+    private readonly Dictionary<ParseMode, Button> _parsingModeButtons = new();
+    private readonly Dictionary<ParseMode, ReplayDiagnosticParsingResult> _parsingResults = new();
 
     private FileInfo? _selectedFile;
     private MatchRecord? _transcodedMatch;
@@ -94,6 +111,7 @@ internal sealed class ReplayDiagnosticWindow : Window
         tabs.Items.Add(CreateTab("JSON de pré-envio", _preSendOutput));
         tabs.Items.Add(CreateTab("Resposta da API", _responseOutput));
         tabs.Items.Add(CreateTab("Logs", _logsOutput));
+        tabs.Items.Add(CreateParsingTab());
         root.Children.Add(tabs);
 
         Grid.SetRow(_status, 3);
@@ -141,11 +159,17 @@ internal sealed class ReplayDiagnosticWindow : Window
             _preSendCompleted = false;
             _transcodedMatch = null;
             _preparedData = null;
+            _parsingResults.Clear();
             _rawOutput.Text = "";
             _transcodedOutput.Text = "";
             _preSendOutput.Text = "";
             _responseOutput.Text = "";
             _logsOutput.Text = "";
+            _parsingOutput.Text = "";
+            _parsingSummary.Text = "";
+            _parsingStatus.Text = L.T("replay.parsing.select_mode");
+            _parsingResultSelector.ItemsSource = null;
+            _parsingResultSelector.SelectedItem = null;
             AppendLog($"[INFO] Arquivo selecionado: {file.FullName}");
             SetStatus($"Etapa atual: arquivo carregado ({file.Length:N0} bytes).");
         }
@@ -285,6 +309,221 @@ internal sealed class ReplayDiagnosticWindow : Window
             AppendLog($"[ERROR] Falha ao copiar o JSON.{Environment.NewLine}{ex}");
             SetStatus("Falha ao copiar o JSON.");
         }
+    }
+
+    private async void OnParsingModeClicked(ParseMode mode)
+    {
+        if (_busy || _selectedFile == null)
+        {
+            return;
+        }
+
+        var file = _selectedFile;
+        SetBusy(true);
+        _parsingStatus.Text = L.F("replay.parsing.transcoding", file.Name, mode);
+        SetStatus(L.F("replay.parsing.stage_running", mode));
+        AppendLog(L.F("replay.parsing.log_start", mode, file.Name));
+        try
+        {
+            var result = await ReplayDiagnosticParsingTranscoder.TranscodeAsync(file, mode);
+            _parsingResults[mode] = result;
+            _parsingResultSelector.ItemsSource = ParsingModes.Where(_parsingResults.ContainsKey).ToArray();
+            _parsingResultSelector.SelectedItem = mode;
+            ShowParsingResult(result);
+            _parsingStatus.Text = L.F("replay.parsing.completed", mode);
+            AppendLog(L.F("replay.parsing.log_completed", mode, result.JsonSizeBytes));
+            SetStatus(L.F("replay.parsing.stage_completed", mode));
+        }
+        catch (Exception ex)
+        {
+            ErrorLog.Write($"Replay diagnostic parsing mode {mode}", ex);
+            _parsingStatus.Text = L.F("replay.parsing.failed_preserved", mode);
+            var stage = ex is ReplayDiagnosticParsingException parsingException
+                ? ParsingStageName(parsingException.Stage)
+                : L.T("replay.parsing.stage_display");
+            AppendLog(L.F("replay.parsing.log_failed", mode) + " " + L.F("replay.parsing.log_stage", stage) + Environment.NewLine + ex);
+            SetStatus(L.F("replay.parsing.failed_status", mode));
+        }
+        finally
+        {
+            SetBusy(false);
+            UpdateButtons();
+        }
+    }
+
+    private async void OnCopyParsingJsonClicked(object? sender, RoutedEventArgs e)
+    {
+        if (GetSelectedParsingResult() is not { } result)
+        {
+            return;
+        }
+
+        try
+        {
+            var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+            if (clipboard == null)
+            {
+                throw new InvalidOperationException(L.T("replay.parsing.clipboard_unavailable"));
+            }
+
+            await clipboard.SetTextAsync(result.Json);
+            _parsingStatus.Text = L.F("replay.parsing.copied", result.Mode);
+            AppendLog("[OK] " + _parsingStatus.Text);
+        }
+        catch (Exception ex)
+        {
+            ErrorLog.Write($"Copy replay parsing JSON for {result.Mode}", ex);
+            _parsingStatus.Text = L.F("replay.parsing.copy_failed", result.Mode);
+            AppendLog("[ERROR] " + _parsingStatus.Text + Environment.NewLine + ex);
+        }
+    }
+
+    private async void OnSaveParsingJsonClicked(object? sender, RoutedEventArgs e)
+    {
+        if (GetSelectedParsingResult() is not { } result)
+        {
+            return;
+        }
+
+        try
+        {
+            var destination = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+            {
+                Title = L.F("replay.parsing.save_title", result.Mode),
+                SuggestedFileName = GetParsingFileName(result.Mode),
+                DefaultExtension = "json",
+                FileTypeChoices =
+                [
+                    new FilePickerFileType("JSON") { Patterns = ["*.json"] },
+                ],
+            });
+            if (destination == null)
+            {
+                return;
+            }
+
+            await using var stream = await destination.OpenWriteAsync();
+            await using var writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            await writer.WriteAsync(result.Json);
+            _parsingStatus.Text = L.F("replay.parsing.saved", result.Mode, destination.Name);
+            AppendLog("[OK] " + _parsingStatus.Text);
+        }
+        catch (Exception ex)
+        {
+            ErrorLog.Write($"Save replay parsing JSON for {result.Mode}", ex);
+            _parsingStatus.Text = L.F("replay.parsing.save_failed", result.Mode);
+            AppendLog("[ERROR] " + _parsingStatus.Text + Environment.NewLine + ex);
+        }
+    }
+
+    private void OnParsingResultSelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (GetSelectedParsingResult() is { } result)
+        {
+            ShowParsingResult(result);
+        }
+    }
+
+    private void ShowParsingResult(ReplayDiagnosticParsingResult result)
+    {
+        _parsingOutput.Text = result.Json;
+        _parsingSummary.Text = L.F(
+            "replay.parsing.summary",
+            result.Mode,
+            result.FileName,
+            result.ExecutedAt.ToLocalTime().ToString("dd/MM/yyyy HH:mm:ss", L.Culture),
+            result.Duration.TotalMilliseconds,
+            result.JsonSizeBytes,
+            result.EventCount);
+    }
+
+    private ReplayDiagnosticParsingResult? GetSelectedParsingResult() =>
+        _parsingResultSelector.SelectedItem is ParseMode mode && _parsingResults.TryGetValue(mode, out var result)
+            ? result
+            : null;
+
+    private static string ParsingStageName(ReplayDiagnosticParsingStage stage) =>
+        stage switch
+        {
+            ReplayDiagnosticParsingStage.FileAccess => L.T("replay.parsing.stage_file"),
+            ReplayDiagnosticParsingStage.ParserInitialization => L.T("replay.parsing.stage_init"),
+            ReplayDiagnosticParsingStage.ReadDecodeParseAndBuild => L.T("replay.parsing.stage_read"),
+            ReplayDiagnosticParsingStage.JsonSerialization => L.T("replay.parsing.stage_json"),
+            ReplayDiagnosticParsingStage.ResultSummary => L.T("replay.parsing.stage_summary"),
+            _ => stage.ToString(),
+        };
+
+    private static string GetParsingFileName(ParseMode mode) =>
+        mode switch
+        {
+            ParseMode.EventsOnly => "replay-events-only.json",
+            ParseMode.Minimal => "replay-minimal.json",
+            ParseMode.Normal => "replay-normal.json",
+            ParseMode.Full => "replay-full.json",
+            _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, L.T("replay.parsing.invalid_mode")),
+        };
+
+    private TabItem CreateParsingTab()
+    {
+        var panel = new Grid
+        {
+            RowDefinitions = new RowDefinitions("Auto,Auto,Auto,Auto,Auto,*"),
+            RowSpacing = 8,
+        };
+        panel.Children.Add(new TextBlock
+        {
+            Text = L.T("replay.parsing.title"),
+            FontSize = 18,
+            FontWeight = Avalonia.Media.FontWeight.Bold,
+        });
+
+        var modeButtons = new WrapPanel { Orientation = Avalonia.Layout.Orientation.Horizontal };
+        foreach (var mode in ParsingModes)
+        {
+            var button = new Button
+            {
+                Content = L.F("replay.parsing.pending", mode),
+                IsEnabled = false,
+                Margin = new Thickness(0, 0, 8, 0),
+            };
+            button.Click += (_, _) => OnParsingModeClicked(mode);
+            _parsingModeButtons.Add(mode, button);
+            modeButtons.Children.Add(button);
+        }
+        Grid.SetRow(modeButtons, 1);
+        panel.Children.Add(modeButtons);
+
+        var resultActions = new WrapPanel
+        {
+            Orientation = Avalonia.Layout.Orientation.Horizontal,
+            VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center,
+        };
+        resultActions.Children.Add(new TextBlock { Text = L.T("replay.parsing.result"), VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center });
+        _parsingResultSelector.SelectionChanged += OnParsingResultSelectionChanged;
+        _parsingResultSelector.Margin = new Thickness(8, 0);
+        resultActions.Children.Add(_parsingResultSelector);
+        _copyParsingJsonButton.Margin = new Thickness(0, 0, 8, 0);
+        _copyParsingJsonButton.Click += OnCopyParsingJsonClicked;
+        resultActions.Children.Add(_copyParsingJsonButton);
+        _saveParsingJsonButton.Click += OnSaveParsingJsonClicked;
+        resultActions.Children.Add(_saveParsingJsonButton);
+        Grid.SetRow(resultActions, 2);
+        panel.Children.Add(resultActions);
+
+        _parsingStatus.Text = L.T("replay.parsing.select_mode");
+        Grid.SetRow(_parsingStatus, 3);
+        panel.Children.Add(_parsingStatus);
+        Grid.SetRow(_parsingSummary, 4);
+        panel.Children.Add(_parsingSummary);
+        Grid.SetRow(_parsingOutput, 5);
+        panel.Children.Add(new ScrollViewer
+        {
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            Content = _parsingOutput,
+        });
+
+        return new TabItem { Header = L.T("replay.parsing.title"), Content = panel };
     }
 
     private async Task RunStageAsync(
@@ -507,5 +746,16 @@ internal sealed class ReplayDiagnosticWindow : Window
         _preSendButton.IsEnabled = !_busy && _transcodeCompleted;
         _sendButton.IsEnabled = !_busy && _preSendCompleted;
         _copyJsonButton.IsEnabled = !_busy && _preSendCompleted;
+        foreach (var (mode, button) in _parsingModeButtons)
+        {
+            button.IsEnabled = !_busy && _selectedFile != null;
+            button.Content = _parsingResults.ContainsKey(mode)
+                ? L.F("replay.parsing.executed", mode)
+                : L.F("replay.parsing.pending", mode);
+        }
+        _parsingResultSelector.IsEnabled = !_busy && _parsingResults.Count > 0;
+        var hasSelectedResult = GetSelectedParsingResult() != null;
+        _copyParsingJsonButton.IsEnabled = !_busy && hasSelectedResult;
+        _saveParsingJsonButton.IsEnabled = !_busy && hasSelectedResult;
     }
 }

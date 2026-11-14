@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace ChestCounter;
@@ -96,6 +97,7 @@ public sealed class MatchRecord
     /// <summary>Non-chest interactions by kind (loot cannons, ammo boxes, food boxes...).</summary>
     public Dictionary<string, int> OtherInteractions { get; set; } = new();
     public int AnalyzerVersion { get; set; } = 1;
+    public ReplayRawData? RawReplayData { get; set; }
     public bool IsBattleRoyale { get; set; } = true;
     public List<ChestRecord> Chests { get; set; } = new();
     public List<TreasureFind> TreasureFinds { get; set; } = new();
@@ -150,6 +152,19 @@ public sealed class MatchRecord
         copy.NearbyTreasureFinds = NearbyTreasureFinds.Where(find => find.Scope != "team" || !addTeammateTreasures).ToList();
         return copy;
     }
+}
+
+public sealed class ReplayRawData
+{
+    public string ParseMode { get; set; } = "";
+    public JsonElement Match { get; set; }
+    public JsonElement Players { get; set; }
+    public JsonElement Teams { get; set; }
+    public JsonElement EventEliminations { get; set; }
+    public JsonElement KillFeed { get; set; }
+    public JsonElement Map { get; set; }
+    public JsonElement Weapons { get; set; }
+    public JsonElement Observations { get; set; }
 }
 
 public sealed class Config
