@@ -21,6 +21,8 @@ internal sealed partial class SettingsViewModel : ObservableObject
     private LanguageOption? _language;
     private string _demosFolder;
     private double _overlayScale;
+    private string _apiStatus;
+    private bool _apiOperationRunning;
 
     public SettingsViewModel(RuntimeContext runtime)
     {
@@ -37,6 +39,7 @@ internal sealed partial class SettingsViewModel : ObservableObject
         _initialChests = Math.Min(MaxInitial, runtime.Monitor.InitialChests).ToString(L.Culture);
         _demosFolder = config.DemosFolder;
         _overlayScale = OverlayScale.Clamp(config.OverlayScalePercent);
+        _apiStatus = runtime.ApiSync.State.Status;
         UpdateModes = new[]
         {
             new UpdateOption("prompt", L.T("settings.ask")),
@@ -114,6 +117,28 @@ internal sealed partial class SettingsViewModel : ObservableObject
     public string LootCannonsLabel => L.T("settings.loot_cannons");
     public string CountOptionsTitle => L.T("settings.also_count_as_a_chest");
     public string UpdatesLabel => L.T("settings.updates");
+    public string ApiSyncTitle => L.T("settings.api_sync");
+    public string ApiUrlLabel => L.T("settings.api_url");
+    public string ApiChangeUrlLabel => L.T("settings.api_change_url");
+    public string ApiTestLabel => L.T("settings.api_test");
+    public string ApiSyncNowLabel => L.T("settings.api_sync_now");
+    public string ApiPendingText => L.F("settings.api_pending", _runtime.ApiSync.State.Pending);
+    public string ApiFailedText => L.F("settings.api_failed", _runtime.ApiSync.State.Failed);
+    public string ApiLastSyncText => _runtime.ApiSync.State.LastSynchronizedAtUtc is { } syncedAt
+        ? L.F("settings.api_last_sync", syncedAt.ToLocalTime().ToString("g", L.Culture))
+        : L.T("settings.api_never_synced");
+    public string ApiAuthStatusText => _runtime.ApiSync.AuthStatus.State switch
+    {
+        ApiAuthState.Obtaining => L.T("settings.api_auth_obtaining"),
+        ApiAuthState.Authenticated => L.T("settings.api_auth_authenticated"),
+        ApiAuthState.Expired => L.T("settings.api_auth_expired"),
+        ApiAuthState.Failed => L.T("settings.api_auth_failed"),
+        _ => L.T("settings.api_auth_not_started"),
+    };
+    public string ApiBaseUrl => _runtime.ApiSync.Configuration.BaseUrl;
+    public string ApiSyncStatus => _apiStatus;
+    public bool CanStartApiOperation => !_apiOperationRunning && !_runtime.ApiSync.State.IsSyncing;
+    public bool CanSyncNow => CanStartApiOperation;
     public string ReplaysFolderLabel => L.T("settings.replays_folder");
     public string ChangeLabel => L.T("settings.change");
     public string InitialChestsLabel => L.T("settings.chests_before_the_counter");
@@ -349,6 +374,8 @@ internal sealed partial class SettingsViewModel : ObservableObject
     public event Action? ShowTeammatesConfirmationRequested;
     public event Action? CountTeammatesConfirmationRequested;
     public event Action<string>? SocialLinkRequested;
+    public event Action? ApiUrlEditRequested;
+    public event Action<bool>? ApiOperationRequested;
 
     [RelayCommand]
     private void ChooseFolder() => FolderSelectionRequested?.Invoke();
@@ -379,6 +406,48 @@ internal sealed partial class SettingsViewModel : ObservableObject
 
     [RelayCommand]
     private void OpenGitHub() => SocialLinkRequested?.Invoke(ProjectRepositoryUrl);
+
+    [RelayCommand]
+    private void EditApiUrl() => ApiUrlEditRequested?.Invoke();
+
+    [RelayCommand]
+    private void TestApiConnection() => ApiOperationRequested?.Invoke(true);
+
+    [RelayCommand]
+    private void SyncNow() => ApiOperationRequested?.Invoke(false);
+
+    public void SaveApiBaseUrl(string url)
+    {
+        _runtime.ApiSync.UpdateBaseUrl(url);
+        OnPropertyChanged(nameof(ApiBaseUrl));
+        OnPropertyChanged(nameof(ApiSyncStatus));
+    }
+
+    public void RefreshApiStatus()
+    {
+        _apiStatus = _runtime.ApiSync.State.Status;
+        OnPropertyChanged(nameof(ApiAuthStatusText));
+        OnPropertyChanged(nameof(ApiBaseUrl));
+        OnPropertyChanged(nameof(ApiPendingText));
+        OnPropertyChanged(nameof(ApiFailedText));
+        OnPropertyChanged(nameof(ApiLastSyncText));
+        OnPropertyChanged(nameof(ApiSyncStatus));
+        OnPropertyChanged(nameof(CanSyncNow));
+        OnPropertyChanged(nameof(CanStartApiOperation));
+    }
+
+    public void SetApiStatus(string message)
+    {
+        _apiStatus = message;
+        OnPropertyChanged(nameof(ApiSyncStatus));
+    }
+
+    public void SetApiOperationRunning(bool running)
+    {
+        _apiOperationRunning = running;
+        OnPropertyChanged(nameof(CanSyncNow));
+        OnPropertyChanged(nameof(CanStartApiOperation));
+    }
 
     public void SetFolder(string folder)
     {

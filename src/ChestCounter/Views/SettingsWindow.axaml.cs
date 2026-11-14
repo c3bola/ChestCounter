@@ -12,6 +12,7 @@ public partial class SettingsWindow : Window
     private readonly RuntimeContext _runtime;
     private readonly SettingsViewModel _viewModel;
     private bool _resetting;
+    private ReplayDiagnosticWindow? _replayDiagnosticWindow;
 
     public SettingsWindow()
         : this(AppRuntime.Current ?? throw new InvalidOperationException("The application runtime is not initialized."))
@@ -31,6 +32,10 @@ public partial class SettingsWindow : Window
         _viewModel.ShowTeammatesConfirmationRequested += ConfirmShowTeammates;
         _viewModel.CountTeammatesConfirmationRequested += ConfirmCountTeammates;
         _viewModel.SocialLinkRequested += OpenSocialLink;
+        _viewModel.ApiUrlEditRequested += EditApiUrl;
+        _viewModel.ApiOperationRequested += StartApiOperation;
+        _runtime.ApiSync.AuthStatusChanged += OnApiAuthStatusChanged;
+        _runtime.ApiSync.StateChanged += OnApiSyncStateChanged;
         if (_runtime.Monitor.LatestOverlay is { } overlay)
             this.FindControl<OverlayVisual>("OverlayPreview")?.SetState(overlay);
         _runtime.Monitor.Changed += OnMonitorChanged;
@@ -45,6 +50,90 @@ public partial class SettingsWindow : Window
             this.FindControl<OverlayVisual>("OverlayPreview")?.SetState(state.Overlay);
             _viewModel.RefreshOverlayScale();
         });
+    }
+
+    private void OnApiSyncStateChanged(ApiSyncState state)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (IsVisible)
+            {
+                _viewModel.RefreshApiStatus();
+            }
+        });
+    }
+
+    private void OnApiAuthStatusChanged(ApiAuthStatus status) => OnApiSyncStateChanged(_runtime.ApiSync.State);
+
+    private async void EditApiUrl()
+    {
+        var dialog = new ApiUrlEditWindow(_viewModel.ApiBaseUrl);
+        if (!await dialog.ShowDialog<bool>(this) || dialog.SavedUrl == null)
+        {
+            return;
+        }
+
+        try
+        {
+            _viewModel.SaveApiBaseUrl(dialog.SavedUrl);
+            _viewModel.SetApiStatus(L.T("settings.api_url_saved"));
+        }
+        catch (Exception ex)
+        {
+            ErrorLog.Write("Update API URL", ex);
+            _viewModel.SetApiStatus(L.T("settings.api_url_invalid"));
+        }
+    }
+
+    private async void OnReplayDiagnosticClick(object? sender, RoutedEventArgs e)
+    {
+        if (!await LocalPasswordDialog.RequestAsync(this))
+        {
+            return;
+        }
+
+        if (_replayDiagnosticWindow is { IsVisible: true } existing)
+        {
+            existing.Activate();
+            return;
+        }
+
+        var window = new ReplayDiagnosticWindow(_runtime);
+        _replayDiagnosticWindow = window;
+        window.Closed += (_, _) =>
+        {
+            if (ReferenceEquals(_replayDiagnosticWindow, window))
+            {
+                _replayDiagnosticWindow = null;
+            }
+        };
+        window.Show(this);
+    }
+
+    private async void StartApiOperation(bool testConnection)
+    {
+        if (!_viewModel.CanStartApiOperation)
+        {
+            return;
+        }
+
+        _viewModel.SetApiOperationRunning(true);
+        try
+        {
+            var operationWindow = new ApiOperationWindow(_runtime.ApiSync, testConnection);
+            operationWindow.Show(this);
+            _viewModel.SetApiStatus(await operationWindow.RunAsync());
+        }
+        catch (Exception ex)
+        {
+            ErrorLog.Write(testConnection ? "Test API connection" : "Manual API synchronization", ex);
+            _viewModel.SetApiStatus(L.T("startup.unexpected_error_the_details_are_in_errors_log"));
+        }
+        finally
+        {
+            _viewModel.SetApiOperationRunning(false);
+            _viewModel.RefreshApiStatus();
+        }
     }
 
     private async void ChooseFolder()
@@ -185,6 +274,7 @@ public partial class SettingsWindow : Window
     private void OnClosed(object? sender, EventArgs e)
     {
         _runtime.Monitor.Changed -= OnMonitorChanged;
+        _runtime.ApiSync.StateChanged -= OnApiSyncStateChanged;
         this.FindControl<OverlayVisual>("OverlayPreview")?.Dispose();
         _viewModel.FolderSelectionRequested -= ChooseFolder;
         _viewModel.LanguageChangeRequested -= ConfirmLanguageChange;
@@ -193,5 +283,8 @@ public partial class SettingsWindow : Window
         _viewModel.ShowTeammatesConfirmationRequested -= ConfirmShowTeammates;
         _viewModel.CountTeammatesConfirmationRequested -= ConfirmCountTeammates;
         _viewModel.SocialLinkRequested -= OpenSocialLink;
+        _viewModel.ApiUrlEditRequested -= EditApiUrl;
+        _runtime.ApiSync.AuthStatusChanged -= OnApiAuthStatusChanged;
+        _viewModel.ApiOperationRequested -= StartApiOperation;
     }
 }

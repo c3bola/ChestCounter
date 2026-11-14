@@ -27,12 +27,14 @@ public sealed class RuntimeContext(
     Monitor monitor,
     Store store,
     Tracker tracker,
+    ApiSyncService apiSync,
     bool firstRun,
     IReadOnlyList<FileInfo> existingReplays)
 {
     public Monitor Monitor { get; } = monitor;
     public Store Store { get; } = store;
     public Tracker Tracker { get; } = tracker;
+    public ApiSyncService ApiSync { get; } = apiSync;
     public bool FirstRun { get; } = firstRun;
     public IReadOnlyList<FileInfo> ExistingReplays { get; } = existingReplays;
 }

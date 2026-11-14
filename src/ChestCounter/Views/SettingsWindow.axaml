@@ -20,6 +20,29 @@
     <ScrollViewer Grid.Row="1">
       <StackPanel Spacing="12">
         <Border Background="{StaticResource CardBackground}" CornerRadius="14" Padding="14">
+          <StackPanel Spacing="8">
+            <TextBlock Text="{Binding ApiSyncTitle}" FontSize="15" FontWeight="Bold" />
+            <TextBlock Text="{Binding ApiAuthStatusText}" Foreground="{StaticResource SecondaryText}" />
+            <TextBlock Text="{Binding ApiUrlLabel}" FontWeight="Bold" />
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+              <TextBox Text="{Binding ApiBaseUrl}" IsReadOnly="True" />
+              <Button Grid.Column="1" Content="{Binding ApiChangeUrlLabel}" Command="{Binding EditApiUrlCommand}" />
+            </Grid>
+            <Button Content="Testar arquivo local" HorizontalAlignment="Left"
+                    Click="OnReplayDiagnosticClick" />
+            <WrapPanel Orientation="Horizontal">
+              <Button Content="{Binding ApiTestLabel}" Command="{Binding TestApiConnectionCommand}" IsEnabled="{Binding CanStartApiOperation}" Margin="0,0,8,0" />
+              <Button Content="{Binding ApiSyncNowLabel}" Command="{Binding SyncNowCommand}" IsEnabled="{Binding CanSyncNow}" />
+            </WrapPanel>
+            <StackPanel Orientation="Horizontal" Spacing="14">
+              <TextBlock Text="{Binding ApiPendingText}" Foreground="{StaticResource SecondaryText}" />
+              <TextBlock Text="{Binding ApiFailedText}" Foreground="{StaticResource SecondaryText}" />
+            </StackPanel>
+            <TextBlock Text="{Binding ApiLastSyncText}" Foreground="{StaticResource SecondaryText}" />
+            <TextBlock Text="{Binding ApiSyncStatus}" Foreground="{StaticResource Cyan}" TextWrapping="Wrap" />
+          </StackPanel>
+        </Border>
+        <Border Background="{StaticResource CardBackground}" CornerRadius="14" Padding="14">
           <StackPanel Spacing="7">
             <TextBlock Text="{Binding OptionsTitle}" FontSize="15" FontWeight="Bold" />
             <CheckBox Content="{Binding OpenWithFortniteLabel}" IsChecked="{Binding StartWithFortnite}" />
