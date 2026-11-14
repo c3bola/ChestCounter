@@ -1,4 +1,6 @@
 using System.Text.RegularExpressions;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using FortniteReplayReader;
 using FortniteReplayReader.Models;
 using FortniteReplayReader.Models.NetFieldExports;
@@ -17,8 +19,34 @@ namespace ChestCounter;
 /// </summary>
 public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
 {
-    private sealed record SearchEvent(float Time, string ActorKey, string Label, uint? SearcherPawn, bool Destroyed = false);
-    private sealed record TossEvent(float Time, string Item);
+    private sealed record SearchEvent(
+        float Time,
+        string ActorKey,
+        string Label,
+        uint? SearcherPawn,
+        bool Destroyed = false,
+        bool? AlreadySearched = null,
+        uint? SearchAnimationCount = null);
+    private sealed record TossEvent(
+        float Time,
+        string Item,
+        uint? ItemDefinitionActorId,
+        string? ItemDefinitionPath,
+        int? Count,
+        float? Durability,
+        int? Level,
+        int? LoadedAmmo,
+        uint? ItemOwner,
+        uint? PawnWhoDroppedPickup,
+        uint? Owner,
+        FVector? ReplicatedLocation,
+        FVector? LootInitialPosition,
+        FVector? LootFinalPosition,
+        FVector? FinalTossRestLocation,
+        float? FlyTime,
+        int? TossState,
+        bool? PickedUp,
+        ushort? OrderIndex);
     private sealed record EquipEvent(float Time, string Item, uint Pawn);
     private sealed record PrizeEvent(float Time, string PrizeId, uint? Pawn, string Container);
 
@@ -90,9 +118,13 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
     private readonly List<GrantEvent> _grants = new();
 
     /// <summary>Bump when the analysis changes so that existing replays are re-analyzed.</summary>
-    public const int CurrentVersion = 14;
+    public const int CurrentVersion = 15;
 
     private static readonly bool ProbeDebug = Environment.GetEnvironmentVariable("CHESTCOUNTER_DEBUG") == "4";
+    private static readonly JsonSerializerOptions RawReplayJson = new(JsonSerializerDefaults.Web)
+    {
+        NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals,
+    };
 
     public ReplayAnalyzer() : base(Environment.GetEnvironmentVariable("CHESTCOUNTER_DEBUG") == "2" ? new StderrLogger() : null,
         Enum.TryParse<ParseMode>(Environment.GetEnvironmentVariable("CHESTCOUNTER_MODE"), out var mode) ? mode : ParseMode.Normal)
@@ -285,6 +317,271 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
 
     internal static float Now => Unreal.Core.ReplayReader<FortniteReplay>.CurrentTime;
 
+    private ReplayRawData CaptureRawReplayData(FortniteReplay replay)
+    {
+        var players = replay.PlayerData?.ToArray() ?? Array.Empty<PlayerData>();
+        foreach (var movement in players.SelectMany(player => player.Locations))
+        {
+            if (movement.Vehicle is uint vehicle && _netGuidCache.TryGetPathName(vehicle, out var path))
+            {
+                movement.VehiclePath = path;
+            }
+        }
+
+        return new ReplayRawData
+        {
+            ParseMode = _parseMode.ToString(),
+            Match = JsonSerializer.SerializeToElement(new
+            {
+                gameData = replay.GameData is { } gameData ? new
+                {
+                    gameData.GameSessionId,
+                    gameData.UtcTimeStartedMatch,
+                    gameData.MatchEndTime,
+                    gameData.MapInfo,
+                    gameData.CurrentPlaylist,
+                    gameData.AdditionalPlaylistLevels,
+                    gameData.ActiveGameplayModifiers,
+                    gameData.RecorderId,
+                    gameData.MaxPlayers,
+                    gameData.TotalTeams,
+                    gameData.TotalBots,
+                    gameData.TeamSize,
+                    gameData.TeamCount,
+                    gameData.PlayerBotsLeft,
+                    gameData.PlayersLeft,
+                    gameData.TeamsLeft,
+                    gameData.ElapsedTime,
+                    gameData.GamePhase,
+                    gameData.SafeZonePhase,
+                    gameData.HasBegunPlay,
+                    gameData.GameStateObservations,
+                    gameData.TotalPlayerStructures,
+                    gameData.TournamentRound,
+                    gameData.IsLargeTeamGame,
+                    gameData.AircraftStartTime,
+                    gameData.SafeZonesStartTime,
+                    gameData.WinningTeam,
+                    gameData.WinningPlayerIds,
+                } : null,
+                stats = replay.Stats is { } stats ? new
+                {
+                    stats.Info,
+                    stats.Unknown,
+                    stats.Eliminations,
+                    stats.Accuracy,
+                    stats.Assists,
+                    stats.WeaponDamage,
+                    stats.OtherDamage,
+                    stats.Revives,
+                    stats.DamageTaken,
+                    stats.DamageToStructures,
+                    stats.MaterialsGathered,
+                    stats.MaterialsUsed,
+                    stats.TotalTraveled,
+                } : null,
+                teamStats = replay.TeamStats is { } teamStats ? new
+                {
+                    teamStats.Info,
+                    teamStats.Unknown,
+                    teamStats.Position,
+                    teamStats.TotalPlayers,
+                } : null,
+                replayTimestamp = replay.Info?.Timestamp,
+                replayLengthInMilliseconds = replay.Info?.LengthInMs,
+                replayBranch = replay.Header?.Branch,
+            }, RawReplayJson),
+            Players = JsonSerializer.SerializeToElement(players.Select(CreateRawPlayer).ToArray(), RawReplayJson),
+            Teams = JsonSerializer.SerializeToElement(
+                (replay.TeamData ?? Array.Empty<TeamData>()).Select(team => new
+                {
+                    team.TeamIndex,
+                    team.PlayerIds,
+                    team.PlayerNames,
+                    team.PartyOwnerId,
+                    team.Placement,
+                    team.TeamKills,
+                }).ToArray(),
+                RawReplayJson),
+            EventEliminations = JsonSerializer.SerializeToElement(replay.Eliminations.Select(elimination => new
+            {
+                eventInfo = elimination.Info,
+                eliminated = new
+                {
+                    elimination.EliminatedInfo.Id,
+                    elimination.EliminatedInfo.PlayerType,
+                    elimination.EliminatedInfo.Rotation,
+                    elimination.EliminatedInfo.Location,
+                    elimination.EliminatedInfo.Scale,
+                },
+                eliminator = new
+                {
+                    elimination.EliminatorInfo.Id,
+                    elimination.EliminatorInfo.PlayerType,
+                    elimination.EliminatorInfo.Rotation,
+                    elimination.EliminatorInfo.Location,
+                    elimination.EliminatorInfo.Scale,
+                },
+                elimination.GunType,
+                elimination.Knocked,
+                libraryDistance = elimination.Distance,
+            }).ToArray(), RawReplayJson),
+            KillFeed = JsonSerializer.SerializeToElement(replay.KillFeed.Select(entry => new
+            {
+                entry.PlayerId,
+                entry.PlayerName,
+                entry.PlayerIsBot,
+                entry.FinisherOrDowner,
+                entry.FinisherOrDownerName,
+                entry.FinisherOrDownerIsBot,
+                entry.ReplicatedWorldTimeSeconds,
+                entry.ReplicatedWorldTimeSecondsDouble,
+                entry.Distance,
+                entry.DeathCause,
+                entry.DeathLocation,
+                entry.DeathCircumstance,
+                entry.DeathTags,
+                entry.IsDowned,
+                entry.IsRevived,
+            }).ToArray(), RawReplayJson),
+            Map = JsonSerializer.SerializeToElement(replay.MapData, RawReplayJson),
+            Weapons = JsonSerializer.SerializeToElement(replay.Weapons, RawReplayJson),
+            Observations = JsonSerializer.SerializeToElement(new
+            {
+                containerInteractions = _searches.Select(search => new
+                {
+                    timeSeconds = search.Time,
+                    sourceActorKey = search.ActorKey,
+                    containerLabel = search.Label == "?" ? null : search.Label,
+                    searchingPawnActorId = search.SearcherPawn,
+                    searchingPlayerStateActorId = PlayerStateForPawn(search.SearcherPawn),
+                    searchingPlayerId = PlayerIdForPawn(search.SearcherPawn),
+                    destroyed = search.Destroyed,
+                    alreadySearched = search.AlreadySearched,
+                    searchAnimationCount = search.SearchAnimationCount,
+                }).ToArray(),
+                droppedItems = _tosses.Select(item => new
+                {
+                    timeSeconds = item.Time,
+                    item = item.Item,
+                    itemDefinitionActorId = item.ItemDefinitionActorId,
+                    itemDefinitionPath = item.ItemDefinitionPath,
+                    item.Count,
+                    item.Durability,
+                    item.Level,
+                    item.LoadedAmmo,
+                    item.ItemOwner,
+                    item.PawnWhoDroppedPickup,
+                    droppedByPlayerId = PlayerIdForPawn(item.PawnWhoDroppedPickup),
+                    item.Owner,
+                    item.ReplicatedLocation,
+                    item.LootInitialPosition,
+                    item.LootFinalPosition,
+                    item.FinalTossRestLocation,
+                    item.FlyTime,
+                    item.TossState,
+                    item.PickedUp,
+                    item.OrderIndex,
+                }).ToArray(),
+                equippedItems = _equips.Select(item => new
+                {
+                    timeSeconds = item.Time,
+                    item = item.Item,
+                    pawnActorId = item.Pawn,
+                    playerId = PlayerIdForPawn(item.Pawn),
+                }).ToArray(),
+                treasureEvents = _prizes.Select(prize => new
+                {
+                    timeSeconds = prize.Time,
+                    prizeId = prize.PrizeId,
+                    pawnActorId = prize.Pawn,
+                    playerId = PlayerIdForPawn(prize.Pawn),
+                    sourceContainer = string.IsNullOrEmpty(prize.Container) ? null : prize.Container,
+                }).ToArray(),
+                prizeHandlerGrants = _grants.Select(grant => new
+                {
+                    timeSeconds = grant.Time,
+                    playerStateActorId = grant.PlayerStateActor,
+                    playerId = _playerStateToPlayerId.TryGetValue(grant.PlayerStateActor, out var playerId)
+                        ? playerId
+                        : (int?)null,
+                    elementId = grant.ElementId,
+                    handler = grant.Handler,
+                }).ToArray(),
+            }, RawReplayJson),
+        };
+    }
+
+    private static object CreateRawPlayer(PlayerData player) => new
+    {
+        player.Id,
+        player.PlayerId,
+        player.EpicId,
+        player.PlatformUniqueNetId,
+        player.BotId,
+        player.IsBot,
+        player.PlayerName,
+        player.PlayerNameCustomOverride,
+        player.StreamerModeName,
+        player.Platform,
+        player.Level,
+        player.SeasonLevelUIDisplay,
+        player.InventoryId,
+        player.PlayerNumber,
+        player.TeamIndex,
+        player.IsPartyLeader,
+        player.IsReplayOwner,
+        player.IsGameSessionOwner,
+        player.HasFinishedLoading,
+        player.HasStartedPlaying,
+        player.HasThankedBusDriver,
+        player.IsUsingStreamerMode,
+        player.IsUsingAnonymousMode,
+        player.Disconnected,
+        player.RebootCounter,
+        player.Placement,
+        player.Kills,
+        player.TeamKills,
+        player.DeathCause,
+        player.DeathCircumstance,
+        player.DeathTags,
+        player.DeathLocation,
+        player.DeathTime,
+        player.DeathTimeDouble,
+        player.Cosmetics,
+        player.CurrentWeapon,
+        locations = player.Locations.Select(movement => new
+        {
+            movement.PawnActorId,
+            movement.ReplicatedMovement,
+            movement.ReplicatedWorldTimeSeconds,
+            movement.ReplicatedWorldTimeSecondsDouble,
+            movement.LastUpdateTime,
+            movement.ReplicatedMovementMode,
+            movement.CurrentMovementStyle,
+            movement.Vehicle,
+            movement.SeatIndex,
+            movement.VehiclePath,
+            movement.bIsCrouched,
+            movement.bIsSprinting,
+            movement.bIsJumping,
+            movement.bIsSlopeSliding,
+            movement.bIsZiplining,
+            movement.bIsTargeting,
+            movement.bIsDBNO,
+            movement.bIsHonking,
+            movement.bIsInAnyStorm,
+            movement.bIsWaitingForEmoteInteraction,
+            movement.bIsPlayingEmote,
+            movement.bIsSkydiving,
+            movement.bIsSkydivingFromLaunchPad,
+            movement.bIsSkydivingFromBus,
+            movement.bIsParachuteOpen,
+            movement.bIsParachuteForcedOpen,
+            movement.bIsInWaterVolume,
+        }).ToArray(),
+    };
+
     private string PathOf(uint? guid)
     {
         if (guid is null || guid == 0)
@@ -294,6 +591,11 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
         return _netGuidCache.TryGetPathName(guid.Value, out var path) ? path : "";
     }
 
+    private string? ResolvedPath(uint? guid) =>
+        guid is uint id && id != 0 && _netGuidCache.TryGetPathName(id, out var path)
+            ? path
+            : null;
+
     private static string CleanName(string path)
     {
         var name = path[(path.LastIndexOf('/') + 1)..];
@@ -302,8 +604,20 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
         {
             name = name[(dot + 1)..];
         }
+
         return UaidSuffix.Replace(name, "");
     }
+
+    private uint? PlayerStateForPawn(uint? pawn) =>
+        pawn is uint pawnId && _pawnToPlayerState.TryGetValue(pawnId, out var playerStateActorId)
+            ? playerStateActorId
+            : null;
+
+    private int? PlayerIdForPawn(uint? pawn) =>
+        PlayerStateForPawn(pawn) is uint playerStateActorId
+        && _playerStateToPlayerId.TryGetValue(playerStateActorId, out var playerId)
+            ? playerId
+            : null;
 
     /// <summary>
     /// The prize handler ability class is sent the first time the recording player receives a treasure:
@@ -376,7 +690,9 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
                             Now,
                             containerKey,
                             _channelLabel.GetValueOrDefault(channelIndex, "?"),
-                            _lastSearcher.TryGetValue(channelIndex, out var s) ? s : null));
+                            _lastSearcher.TryGetValue(channelIndex, out var s) ? s : null,
+                            AlreadySearched: container.bAlreadySearched,
+                            SearchAnimationCount: container.SearchAnimationCount));
                     }
                 }
                 else if (container.bDestroyed && container.SearchingPawn is uint destroyer && destroyer != 0)
@@ -385,7 +701,14 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
                     // server sets SearchingPawn to whoever destroyed it. Counted once, like an opened chest.
                     if (_searched.Add(containerKey))
                     {
-                        _searches.Add(new SearchEvent(Now, containerKey, _channelLabel.GetValueOrDefault(channelIndex, "?"), destroyer, Destroyed: true));
+                        _searches.Add(new SearchEvent(
+                            Now,
+                            containerKey,
+                            _channelLabel.GetValueOrDefault(channelIndex, "?"),
+                            destroyer,
+                            Destroyed: true,
+                            AlreadySearched: container.bAlreadySearched,
+                            SearchAnimationCount: container.SearchAnimationCount));
                     }
                 }
                 break;
@@ -431,7 +754,26 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
                 }
                 if (!string.IsNullOrEmpty(item))
                 {
-                    _tosses.Add(new TossEvent(Now, item));
+                    _tosses.Add(new TossEvent(
+                        Now,
+                        item,
+                        pickup.ItemDefinition?.Value,
+                        ResolvedPath(pickup.ItemDefinition?.Value),
+                        pickup.Count,
+                        pickup.Durability,
+                        pickup.Level,
+                        pickup.LoadedAmmo,
+                        pickup.ItemOwner,
+                        pickup.PawnWhoDroppedPickup,
+                        pickup.Owner,
+                        pickup.ReplicatedMovement?.Location,
+                        pickup.LootInitialPosition,
+                        pickup.LootFinalPosition,
+                        pickup.FinalTossRestLocation,
+                        pickup.FlyTime,
+                        pickup.TossState,
+                        pickup.bPickedUp,
+                        pickup.OrderIndex));
                 }
                 break;
 
@@ -859,6 +1201,7 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
             OtherContainersOpened = others.Where(kv => kv.Key != ChestKinds.AmmoBox).Sum(kv => kv.Value),
             OtherInteractions = others,
             AnalyzerVersion = CurrentVersion,
+            RawReplayData = CaptureRawReplayData(replay),
             IsBattleRoyale = Profiles.IsBattleRoyalePlaylist(replay.GameData?.CurrentPlaylist),
             Chests = chests,
             TreasureFinds = finds.Where(find => find.Scope == "own").ToList(),

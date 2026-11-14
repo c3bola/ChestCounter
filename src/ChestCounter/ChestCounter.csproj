@@ -5,7 +5,7 @@
     <ApplicationIcon>app.ico</ApplicationIcon>
     <AssemblyName>ContadorDeBau</AssemblyName>
     <RootNamespace>ChestCounter</RootNamespace>
-    <Version>3.2.0</Version>
+    <Version>3.3.0</Version>
     <InvariantGlobalization>false</InvariantGlobalization>
     <PublishTrimmed>false</PublishTrimmed>
     <ServerGarbageCollection>false</ServerGarbageCollection>
@@ -15,6 +15,9 @@
     <AvaloniaUseCompiledBindingsByDefault>false</AvaloniaUseCompiledBindingsByDefault>
   </PropertyGroup>
   <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>ChestCounter.Infrastructure.Tests</_Parameter1>
+    </AssemblyAttribute>
     <PackageReference Include="Avalonia" Version="12.1.6" />
     <PackageReference Include="Avalonia.Desktop" Version="12.1.6" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.6" />

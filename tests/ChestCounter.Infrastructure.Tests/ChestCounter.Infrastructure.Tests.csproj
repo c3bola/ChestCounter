@@ -16,5 +16,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\ChestCounter.Infrastructure\ChestCounter.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\ChestCounter\ChestCounter.csproj" />
   </ItemGroup>
 </Project>

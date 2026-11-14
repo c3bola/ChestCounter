@@ -13,6 +13,12 @@ Valide o catálogo localizado e compile a aplicação com:
 dotnet build src\ChestCounter\ChestCounter.csproj -c Release
 ```
 
+No laboratório de replay, os JSONs dos modos de parsing representam valores de
+ponto flutuante não finitos como as strings `"NaN"`, `"Infinity"` e
+`"-Infinity"`, pois JSON não possui números equivalentes. A aba Logs indica a
+etapa da falha e conserva a exceção original; leitura, decodificação, parsing e
+construção do resultado compartilham a chamada `ReadReplay` da biblioteca.
+
 Verificações manuais prioritárias:
 
 1. Confirmar escopo de recompensa própria/equipe/outro no relatório e alternar a
