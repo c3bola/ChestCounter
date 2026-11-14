@@ -25,6 +25,11 @@ public class ReplayReader : Unreal.Core.ReplayReader<FortniteReplay>
     {
     }
 
+    public ReplayReader(ILogger logger, ParseMode parseMode, IReadOnlySet<Type>? ignoredExportGroups)
+        : base(logger, parseMode, ignoredExportGroups)
+    {
+    }
+
     public FortniteReplay ReadReplay(string fileName)
     {
         var bytes = File.ReadAllBytes(fileName);
@@ -186,7 +191,10 @@ public class ReplayReader : Unreal.Core.ReplayReader<FortniteReplay>
         if (info.Group == ReplayEventTypes.PLAYER_ELIMINATION)
         {
             var elimination = ParseElimination(decryptedArchive, info);
-            Replay.Eliminations.Add(elimination);
+            if (!Replay.Eliminations.Contains(elimination))
+            {
+                Replay.Eliminations.Add(elimination);
+            }
             return;
         }
 

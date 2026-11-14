@@ -44,4 +44,9 @@ public class FortniteReplay : Replay
     /// Map information
     /// </summary>
     public MapData MapData { get; internal set; } = new MapData();
+
+    /// <summary>
+    /// Weapon properties observed while parsing the replay.
+    /// </summary>
+    public IEnumerable<WeaponData> Weapons { get; internal set; } = Array.Empty<WeaponData>();
 }

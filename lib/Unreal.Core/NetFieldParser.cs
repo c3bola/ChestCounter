@@ -23,6 +23,8 @@ public class NetFieldParser
     private readonly Dictionary<Type, RepLayoutCmdType> _primitiveTypeLayout = new();
     private readonly Dictionary<string, ClassNetCacheInfo> _classNetCacheToNetFieldGroup = new();
     private readonly CompiledLinqCache _linqCache = new();
+    private readonly List<(string Prefix, NetFieldGroupInfo Info)> _prefixGroups = new();
+    private readonly HashSet<string> _noPrefixMatch = new();
 
     /// <summary>
     /// Create a NetFieldParser, which will load all <see cref="NetFieldExportGroup"/> in the <see cref="AppDomain.CurrentDomain"/>.
@@ -30,7 +32,12 @@ public class NetFieldParser
     /// <param name="cache">Instance of NetGuidCache, used to resolve netguids to their string value.</param>
     /// <param name="mode"></param>
     /// <param name="assemblyNameFilter">Found assemblies should contain this string.</param>
-    public NetFieldParser(NetGuidCache cache, ParseMode mode, string assemblyNameFilter = "ReplayReader")
+    /// <param name="ignoredTypes">Export groups to omit from this parser instance.</param>
+    public NetFieldParser(
+        NetGuidCache cache,
+        ParseMode mode,
+        string assemblyNameFilter = "ReplayReader",
+        IReadOnlySet<Type>? ignoredTypes = null)
     {
         GuidCache = cache;
 
@@ -43,6 +50,11 @@ public class NetFieldParser
         var netFields = types.Where(c => c.GetCustomAttribute<NetFieldExportGroupAttribute>() != null);
         foreach (var type in netFields)
         {
+            if (ignoredTypes?.Contains(type) == true)
+            {
+                continue;
+            }
+
             var attribute = type.GetCustomAttribute<NetFieldExportGroupAttribute>();
             if (attribute.MinimalParseMode <= mode)
             {
@@ -57,14 +69,35 @@ public class NetFieldParser
             }
         }
 
+        var prefixFields = types.Where(c => c.GetCustomAttribute<NetFieldExportGroupPrefixAttribute>() != null);
+        foreach (var type in prefixFields)
+        {
+            if (ignoredTypes?.Contains(type) == true)
+            {
+                continue;
+            }
+
+            var attribute = type.GetCustomAttribute<NetFieldExportGroupPrefixAttribute>();
+            if (attribute.MinimalParseMode <= mode)
+            {
+                var info = new NetFieldGroupInfo
+                {
+                    Type = type,
+                    TypeId = _linqCache.AddExportType(type),
+                };
+
+                AddNetFieldInfo(type, info, mode);
+                _prefixGroups.Add((attribute.Prefix, info));
+            }
+        }
+
         // Add all subgroups
         var netSubFields = types.Where(c => c.GetCustomAttribute<NetFieldExportSubGroupAttribute>() != null);
         foreach (var type in netSubFields)
         {
             var attribute = type.GetCustomAttribute<NetFieldExportSubGroupAttribute>();
-            if (attribute.MinimalParseMode <= mode)
+            if (attribute.MinimalParseMode <= mode && NetFieldGroups.TryGetValue(attribute.Path, out var info))
             {
-                NetFieldGroups.TryGetValue(attribute.Path, out var info);
                 AddNetFieldInfo(type, info, mode);
             }
         }
@@ -111,10 +144,11 @@ public class NetFieldParser
         //Load object instances
         _objects = new SingleInstanceExport[_linqCache.TotalTypes];
 
-        for (var i = 0; i < NetFieldGroups.Length; i++)
+        IEnumerable<NetFieldGroupInfo> allGroups = Enumerable.Range(0, NetFieldGroups.Length)
+            .Select(i => NetFieldGroups[i])
+            .Concat(_prefixGroups.Select(prefix => prefix.Info));
+        foreach (var group in allGroups)
         {
-            var group = NetFieldGroups[i];
-
             _objects[group.TypeId] = new SingleInstanceExport
             {
                 Instance = (INetFieldExportGroup)Activator.CreateInstance(group.Type),
@@ -252,19 +286,44 @@ public class NetFieldParser
 
     private void EnsureAlias(string group)
     {
-        if (AliasResolver is null || string.IsNullOrEmpty(group) || _aliasMisses.Contains(group) || NetFieldGroups.TryGetValue(group, out var _))
+        if (string.IsNullOrEmpty(group) || NetFieldGroups.TryGetValue(group, out var _))
         {
             return;
         }
 
-        var target = AliasResolver(group);
-        if (target != null && NetFieldGroups.TryGetValue(target, out var info))
+        if (!_aliasMisses.Contains(group) && AliasResolver != null)
         {
-            NetFieldGroups.Add(group, info);
-            return;
+            var target = AliasResolver(group);
+            if (target != null && NetFieldGroups.TryGetValue(target, out var info))
+            {
+                NetFieldGroups.Add(group, info);
+                return;
+            }
+
+            _aliasMisses.Add(group);
         }
 
-        _aliasMisses.Add(group);
+        TryAddPrefixAlias(group);
+    }
+
+    private bool TryAddPrefixAlias(string group)
+    {
+        if (_prefixGroups.Count == 0 || string.IsNullOrEmpty(group) || _noPrefixMatch.Contains(group))
+        {
+            return false;
+        }
+
+        foreach ((string prefix, NetFieldGroupInfo info) in _prefixGroups)
+        {
+            if (group.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                NetFieldGroups.Add(group, info);
+                return true;
+            }
+        }
+
+        _noPrefixMatch.Add(group);
+        return false;
     }
 
     /// <summary>

@@ -101,12 +101,18 @@ public class Cosmetics
 
 public class PlayerMovement
 {
+    public uint? PawnActorId { get; set; }
     public FRepMovement? ReplicatedMovement { get; set; }
     public float? ReplicatedWorldTimeSeconds { get; set; }
 
     public double? ReplicatedWorldTimeSecondsDouble { get; set; }
 
     public float? LastUpdateTime { get; set; }
+    public int? ReplicatedMovementMode { get; set; }
+    public int? CurrentMovementStyle { get; set; }
+    public uint? Vehicle { get; set; }
+    public byte? SeatIndex { get; set; }
+    public string? VehiclePath { get; set; }
 
     public bool? bIsCrouched { get; set; }
     public bool? bIsSprinting { get; set; }

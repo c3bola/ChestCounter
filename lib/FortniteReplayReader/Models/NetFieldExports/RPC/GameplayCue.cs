@@ -17,12 +17,12 @@ public abstract class GameplayCue
     public FPredictionKey PredictionKey { get; set; }
 }
 
-[NetFieldExportGroup("/Script/FortniteGame.FortPawn:NetMulticast_InvokeGameplayCueAdded_WithParams", minimalParseMode: ParseMode.Debug)]
+[NetFieldExportGroup("/Script/FortniteGame.FortPawn:NetMulticast_InvokeGameplayCueAdded_WithParams", minimalParseMode: ParseMode.Ignore)]
 public class GameplayCueAdded : GameplayCue, INetFieldExportGroup
 {
 }
 
-[NetFieldExportGroup("/Script/FortniteGame.FortPawn:NetMulticast_InvokeGameplayCueExecuted_WithParams", minimalParseMode: ParseMode.Debug)]
+[NetFieldExportGroup("/Script/FortniteGame.FortPawn:NetMulticast_InvokeGameplayCueExecuted_WithParams", minimalParseMode: ParseMode.Ignore)]
 public class GameplayCueExecuted : GameplayCue, INetFieldExportGroup
 {
 }

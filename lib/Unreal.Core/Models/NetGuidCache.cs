@@ -64,7 +64,7 @@ public class NetGuidCache
     private readonly Dictionary<uint, NetFieldExportGroup> _archTypeToExportGroup = new();
     private readonly Dictionary<uint, string> _cleanedPaths = new();
     private readonly Dictionary<string, string> _cleanedClassNetCache = new();
-    private readonly HashSet<string> _failedPaths = new(); //Path names that didn't find an export group
+    private readonly Dictionary<string, int> _failedPaths = new();
     private NetFieldExportGroup? _networkGameplayTagNodeIndex { get; set; }
 
     /// <summary>
@@ -152,8 +152,7 @@ public class NetGuidCache
                 return null;
             }
 
-            // Don't need to recheck. Some export groups are added later though
-            if (_failedPaths.Contains(path))
+            if (_failedPaths.TryGetValue(path, out var knownGroups) && knownGroups == NetFieldExportGroupMap.Count)
             {
                 return null;
             }
@@ -200,7 +199,7 @@ public class NetGuidCache
                 }
             }
 
-            _failedPaths.Add(path);
+            _failedPaths[path] = NetFieldExportGroupMap.Count;
             return null;
         }
 

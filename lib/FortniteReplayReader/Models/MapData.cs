@@ -17,4 +17,6 @@ public class MapData
     public int? GridCountX { get; internal set; }
     public int? GridCountY { get; internal set; }
     public FVector2D WorldGridTotalSize { get; internal set; }
+    public FGameplayTagContainer[] PoiTagContainerTable { get; internal set; }
+    public int? PoiTagContainerTableSize { get; internal set; }
 }

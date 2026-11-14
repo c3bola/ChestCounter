@@ -2,6 +2,15 @@
 
 Original code: https://github.com/Shiqan/FortniteReplayDecompressor (MIT license, see LICENSE-FortniteReplayDecompressor), commit 76f74c1.
 
+Upstream improvements from the local `reference/FortniteReplayDecompressor-master` 3.1.1 source are also integrated:
+
+- `NetFieldParser`: prefix export-group matching and optional ignored group types, while retaining ChestCounter's export-group and ClassNetCache alias resolvers.
+- `NetGuidCache`: retry a previously unresolved export path after new groups arrive.
+- `FortniteReplayBuilder`: mark the replay owner if its PlayerState arrives before the recorder ID.
+- `HealthSet`: correct shield handles and retain null for values not present in an update.
+- `BatchedDamageCues`: expose `SourceWeapon`; avoid parsing ignored gameplay-cue groups.
+- `PlayerBuild`: recognize player-built export groups by path prefix in `Full` mode.
+
 Changes for ChestCounter:
 
 1. `Unreal.Core/ReplayReader.cs`: static `CurrentTime` field (timestamp of the frame being read).

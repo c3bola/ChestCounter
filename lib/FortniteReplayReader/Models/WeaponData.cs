@@ -2,6 +2,7 @@
 
 public class WeaponData
 {
+    public uint? ActorId { get; set; }
     public bool? bIsEquippingWeapon { get; set; }
     public bool? bIsReloadingWeapon { get; set; }
     public string WeaponName { get; set; }

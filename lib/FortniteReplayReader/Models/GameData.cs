@@ -19,7 +19,16 @@ public class GameData
     public int? TotalTeams { get; set; }
     public int? TotalBots { get; set; }
     public int? TeamSize { get; set; }
+    public int? TeamCount { get; set; }
+    public int? PlayerBotsLeft { get; set; }
+    public int? PlayersLeft { get; set; }
+    public int? TeamsLeft { get; set; }
+    public int? ElapsedTime { get; set; }
+    public int? GamePhase { get; set; }
+    public byte? SafeZonePhase { get; set; }
+    public bool? HasBegunPlay { get; set; }
     public int? TotalPlayerStructures { get; set; }
+    public IList<GameStateObservation> GameStateObservations { get; set; } = new List<GameStateObservation>();
 
     public bool IsTournamentRound => TournamentRound > 0;
     public int? TournamentRound { get; set; }
@@ -31,3 +40,16 @@ public class GameData
     public uint? WinningTeam { get; set; }
     public IEnumerable<int> WinningPlayerIds { get; set; }
 }
+
+public sealed record GameStateObservation(
+    float? ReplicatedWorldTimeSeconds,
+    double? ReplicatedWorldTimeSecondsDouble,
+    int? TeamCount,
+    int? TeamSize,
+    int? PlayerBotsLeft,
+    int? PlayersLeft,
+    int? TeamsLeft,
+    int? ElapsedTime,
+    int? GamePhase,
+    byte? SafeZonePhase,
+    bool? HasBegunPlay);

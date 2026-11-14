@@ -59,6 +59,9 @@ public class BatchedDamageCues : INetFieldExportGroup
     [NetFieldExport("NonPlayerbIsCritical", RepLayoutCmdType.PropertyBool)]
     public bool? NonPlayerbIsCritical { get; set; }
 
+    [NetFieldExport("SourceWeapon", RepLayoutCmdType.PropertyObject)]
+    public uint? SourceWeapon { get; set; }
+
     [NetFieldExport("bIsValid", RepLayoutCmdType.PropertyBool)]
     public bool? bIsValid { get; set; }
 }

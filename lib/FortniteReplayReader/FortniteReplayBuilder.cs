@@ -34,8 +34,8 @@ public class FortniteReplayBuilder
     private readonly Dictionary<uint, WeaponData> _weapons = new();
     private readonly Dictionary<uint, WeaponData> _unknownWeapons = new();
 
-    private float? ReplicatedWorldTimeSeconds = 0;
-    private double? ReplicatedWorldTimeSecondsDouble = 0;
+    private float? ReplicatedWorldTimeSeconds;
+    private double? ReplicatedWorldTimeSecondsDouble;
 
     public void AddActorChannel(uint channelIndex, uint guid)
     {
@@ -62,6 +62,7 @@ public class FortniteReplayBuilder
         replay.KillFeed = KillFeed;
         replay.TeamData = _teams.Values;
         replay.PlayerData = _players.Values;
+        replay.Weapons = _weapons.Values;
         return replay;
     }
 
@@ -114,17 +115,15 @@ public class FortniteReplayBuilder
 
         GameData.AdditionalPlaylistLevels ??= state.AdditionalPlaylistLevelsStreamed?.Select(i => i.Name);
 
-        GameData.MaxPlayers ??= state.TeamCount;
+        GameData.TeamCount ??= state.TeamCount;
         GameData.TeamSize ??= state.TeamSize;
-        GameData.TeamSize ??= state.ActiveTeamNums?.Length;
-        GameData.TotalBots = state.PlayerBotsLeft > GameData.TotalBots ? state.PlayerBotsLeft : GameData.TotalBots;
-
-        GameData.TotalPlayerStructures ??= state.TotalPlayerStructures;
-
-        GameData.AircraftStartTime ??= state.AircraftStartTime;
-        GameData.SafeZonesStartTime ??= state.SafeZonesStartTime;
-
-        MapData.BattleBusFlightPaths ??= state.TeamFlightPaths?.Select(i => new BattleBus(i) { Skin = state.DefaultBattleBus?.Name });
+        GameData.PlayerBotsLeft = state.PlayerBotsLeft ?? GameData.PlayerBotsLeft;
+        GameData.PlayersLeft = state.PlayersLeft ?? GameData.PlayersLeft;
+        GameData.TeamsLeft = state.TeamsLeft ?? GameData.TeamsLeft;
+        GameData.ElapsedTime = state.ElapsedTime ?? GameData.ElapsedTime;
+        GameData.GamePhase = state.GamePhase ?? GameData.GamePhase;
+        GameData.SafeZonePhase = state.SafeZonePhase ?? GameData.SafeZonePhase;
+        GameData.HasBegunPlay = state.bReplicatedHasBegunPlay ?? GameData.HasBegunPlay;
 
         if (state.ReplicatedWorldTimeSeconds != null)
         {
@@ -136,9 +135,44 @@ public class FortniteReplayBuilder
             ReplicatedWorldTimeSecondsDouble = state.ReplicatedWorldTimeSecondsDouble;
         }
 
+        var observation = new GameStateObservation(
+            ReplicatedWorldTimeSeconds,
+            ReplicatedWorldTimeSecondsDouble,
+            state.TeamCount,
+            state.TeamSize,
+            state.PlayerBotsLeft,
+            state.PlayersLeft,
+            state.TeamsLeft,
+            state.ElapsedTime,
+            state.GamePhase,
+            state.SafeZonePhase,
+            state.bReplicatedHasBegunPlay);
+        if (GameData.GameStateObservations.Count == 0 || GameData.GameStateObservations[^1] != observation)
+        {
+            GameData.GameStateObservations.Add(observation);
+        }
+
+        GameData.TotalPlayerStructures ??= state.TotalPlayerStructures;
+
+        GameData.AircraftStartTime ??= state.AircraftStartTime;
+        GameData.SafeZonesStartTime ??= state.SafeZonesStartTime;
+
+        MapData.BattleBusFlightPaths ??= state.TeamFlightPaths?.Select(i => new BattleBus(i) { Skin = state.DefaultBattleBus?.Name });
+
         GameData.WinningPlayerIds ??= state.WinningPlayerList;
         GameData.WinningTeam ??= state.WinningTeam;
-        GameData.RecorderId ??= state.RecorderPlayerState?.Value;
+        if (GameData.RecorderId is null && state.RecorderPlayerState?.Value is { } recorderId)
+        {
+            GameData.RecorderId = recorderId;
+
+            foreach (KeyValuePair<uint, PlayerData> player in _players)
+            {
+                if (_channelToActor.TryGetValue(player.Key, out uint actorId) && actorId == recorderId)
+                {
+                    player.Value.IsReplayOwner = true;
+                }
+            }
+        }
     }
 
     public void UpdatePrivateName(uint channelIndex, PlayerNameData playerNameData)
@@ -295,8 +329,26 @@ public class FortniteReplayBuilder
         entry.DeathCircumstance ??= state.DeathCircumstance;
         entry.DeathTags ??= state.DeathTags?.Tags?.Select(i => i.TagName);
 
-        KillFeed.Add(entry);
+        if (!KillFeed.Any(existing => SameKillFeedEvent(existing, entry)))
+        {
+            KillFeed.Add(entry);
+        }
     }
+
+    private static bool SameKillFeedEvent(KillFeedEntry left, KillFeedEntry right) =>
+        left.PlayerId == right.PlayerId
+        && left.FinisherOrDowner == right.FinisherOrDowner
+        && left.ReplicatedWorldTimeSeconds == right.ReplicatedWorldTimeSeconds
+        && left.ReplicatedWorldTimeSecondsDouble == right.ReplicatedWorldTimeSecondsDouble
+        && left.IsDowned == right.IsDowned
+        && left.IsRevived == right.IsRevived
+        && left.Distance == right.Distance
+        && left.DeathCause == right.DeathCause
+        && Equals(left.DeathLocation, right.DeathLocation)
+        && left.DeathCircumstance == right.DeathCircumstance
+        && (left.DeathTags ?? Array.Empty<string>()).SequenceEqual(
+            right.DeathTags ?? Array.Empty<string>(),
+            StringComparer.Ordinal);
 
     public void UpdatePlayerPawn(uint channelIndex, PlayerPawn pawn)
     {
@@ -361,10 +413,15 @@ public class FortniteReplayBuilder
         {
             var newLocation = new PlayerMovement
             {
+                PawnActorId = _channelToActor.TryGetValue(channelIndex, out var pawnActorId) ? pawnActorId : null,
                 ReplicatedMovement = pawn.ReplicatedMovement,
                 ReplicatedWorldTimeSeconds = ReplicatedWorldTimeSeconds,
                 ReplicatedWorldTimeSecondsDouble = ReplicatedWorldTimeSecondsDouble,
                 LastUpdateTime = pawn.ReplayLastTransformUpdateTimeStamp,
+                ReplicatedMovementMode = pawn.ReplicatedMovementMode,
+                CurrentMovementStyle = pawn.CurrentMovementStyle,
+                Vehicle = pawn.Vehicle,
+                SeatIndex = pawn.SeatIndex,
                 bIsCrouched = pawn.bIsCrouched,
                 bIsInAnyStorm = pawn.bIsInAnyStorm,
                 bIsZiplining = pawn.bIsZiplining,
@@ -456,6 +513,11 @@ public class FortniteReplayBuilder
             {
                 _unknownWeapons.Remove(channelIndex);
             }
+        }
+
+        if (_channelToActor.TryGetValue(channelIndex, out var actorId))
+        {
+            newWeapon.ActorId ??= actorId;
         }
 
         newWeapon.bIsEquippingWeapon ??= weapon.bIsEquippingWeapon;
@@ -565,8 +627,8 @@ public class FortniteReplayBuilder
         MapData.WorldGridEnd ??= poiManager.WorldGridEnd;
         MapData.WorldGridSpacing ??= poiManager.WorldGridSpacing;
         MapData.WorldGridTotalSize ??= poiManager.WorldGridTotalSize;
-
-        // ignore PoiTagContainerTable since it is just a list of all POI...
+        MapData.PoiTagContainerTable ??= poiManager.PoiTagContainerTable;
+        MapData.PoiTagContainerTableSize ??= poiManager.PoiTagContainerTableSize;
     }
 
     //public void UpdateGameplayCue(uint channelIndex, GameplayCue gameplayCue)
