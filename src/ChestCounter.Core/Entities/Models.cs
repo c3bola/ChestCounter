@@ -71,6 +71,11 @@ public sealed class MatchRecord
 {
     public string SessionId { get; set; } = "";
     public string ReplayFile { get; set; } = "";
+    public string? ReplayFileSha256 { get; set; }
+    public long? ReplayFileSizeBytes { get; set; }
+    public DateTime? ReplayFileCreatedAtUtc { get; set; }
+    public string? AnalysisApplicationVersion { get; set; }
+    public string? ParserVersion { get; set; }
     public DateTime AnalyzedAtUtc { get; set; }
     public DateTime? MatchStartUtc { get; set; }
     public int? DurationSeconds { get; set; }

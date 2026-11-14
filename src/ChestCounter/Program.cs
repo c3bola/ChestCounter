@@ -121,6 +121,13 @@ internal static class Program
             }
         }
 
+        var apiConfigStore = new ApiIntegrationConfigStore(Path.Combine(dataDir, "api-config.json"));
+        _ = apiConfigStore.Load();
+        var apiSync = new ApiSyncService(apiConfigStore, Path.Combine(dataDir, "api-sync-queue.json"));
+        tracker.MatchPersisted += apiSync.QueueReplay;
+        apiSync.Start();
+        apiSync.QueueHistorical(data, tracker.ReplayFiles());
+
         var monitorServices = new MonitorServices();
         var monitorDependencies = new MonitorDependencies(
             monitorServices, monitorServices, monitorServices, monitorServices, monitorServices, monitorServices);
@@ -139,7 +146,7 @@ internal static class Program
             }
         }
 
-        AppRuntime.Current = new RuntimeContext(monitor, store, tracker, firstRun, existing);
+        AppRuntime.Current = new RuntimeContext(monitor, store, tracker, apiSync, firstRun, existing);
         int exitCode;
         try
         {
@@ -147,7 +154,9 @@ internal static class Program
         }
         finally
         {
+            tracker.MatchPersisted -= apiSync.QueueReplay;
             monitor.Stop();
+            apiSync.Dispose();
         }
         if ((monitor.RestartAfterUpdate || monitor.RestartRequested) && AppInfo.ExePath is { } newExe)
         {

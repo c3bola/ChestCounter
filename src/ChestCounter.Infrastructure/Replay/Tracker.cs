@@ -1,4 +1,5 @@
 using System.Text;
+using System.Security.Cryptography;
 
 namespace ChestCounter;
 
@@ -41,6 +42,8 @@ public sealed class Tracker : IMonitorTracking
     }
 
     public TrackerData Data => _data;
+
+    public event Action<MatchRecord, FileInfo>? MatchPersisted;
 
     /// <summary>True while a replay is waiting to be finished / to become stable.</summary>
     public bool HasPending { get; private set; }
@@ -276,6 +279,14 @@ public sealed class Tracker : IMonitorTracking
         _data.Matches.Add(record);
         _data.ProcessedFiles[key] = record.SessionId;
         _store.SaveData(_data);
+        try
+        {
+            MatchPersisted?.Invoke(record, file);
+        }
+        catch (Exception ex)
+        {
+            ErrorLog.Write($"Queue replay synchronization ({file.Name})", ex);
+        }
         if (_liveFile == file.FullName)
         {
             ClearLive(); // the final analysis replaces the live estimate
@@ -388,8 +399,13 @@ public sealed class Tracker : IMonitorTracking
     private MatchRecord Analyze(FileInfo file, TimeSpan timeout)
     {
         byte[] bytes;
+        long fileSize;
+        DateTime fileCreatedAtUtc;
         using (var fs = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
         {
+            fileSize = fs.Length;
+            file.Refresh();
+            fileCreatedAtUtc = file.CreationTimeUtc;
             bytes = new byte[fs.Length];
             fs.ReadExactly(bytes);
         }
@@ -419,13 +435,19 @@ public sealed class Tracker : IMonitorTracking
         {
             throw new TimeoutException(L.T("tracker.analysis_took_too_long"));
         }
+        var fileSha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
         bytes = Array.Empty<byte>();
         ReleaseMemory();
         if (failure != null)
         {
             System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw(); // keep the original stack
         }
-        return result!;
+        result!.ReplayFileSha256 = fileSha256;
+        result.ReplayFileSizeBytes = fileSize;
+        result.ReplayFileCreatedAtUtc = fileCreatedAtUtc;
+        result.AnalysisApplicationVersion = AppInfo.VersionText;
+        result.ParserVersion = typeof(FortniteReplayReader.ReplayReader).Assembly.GetName().Version?.ToString() ?? "0.0.0";
+        return result;
     }
 
     // ---- Live match ---------------------------------------------------------------------------
