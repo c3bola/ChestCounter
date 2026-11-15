@@ -17,6 +17,9 @@ public interface IMonitorTracking
     bool IsFinishing { get; }
     bool IsLive { get; }
     MatchRecord? LiveMatch { get; }
+    int BacklogCount();
+    event Action? ReplayProcessed;
+    event Action<LocalReplayProgress>? LocalProgressChanged;
     int Scan(bool ignoreQuietPeriod = false);
     bool UpdateLive();
     void Reset(string backupPath);

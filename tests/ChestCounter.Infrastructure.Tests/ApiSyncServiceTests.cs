@@ -326,6 +326,115 @@ public sealed class ApiSyncServiceTests
     }
 
     [Fact]
+    public async Task SyncWaitsUntilLocalProcessingFinishesBeforeSendingRequests()
+    {
+        using var folder = new TemporaryFolder();
+        var configStore = new ApiIntegrationConfigStore(Path.Combine(folder.Path, "api-config.json"));
+        _ = configStore.Load();
+        var handler = new StubHttpMessageHandler((_, _) => new HttpResponseMessage(HttpStatusCode.Created));
+        using var client = new HttpClient(handler);
+        using var service = CreateService(configStore, Path.Combine(folder.Path, "api-sync-queue.json"), client);
+        await service.QueueReplayAsync(CreateMatch(), WriteReplay(folder.Path));
+        service.SetLocalProcessing(true);
+
+        var syncTask = service.SyncNowAsync();
+        await Task.Delay(100);
+
+        Assert.Equal(0, handler.AuthCalls);
+        Assert.Equal(0, handler.ProtectedCalls);
+
+        service.SetLocalProcessing(false);
+        var summary = await syncTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(1, summary.Synchronized);
+        Assert.Equal(1, handler.AuthCalls);
+        Assert.Equal(1, handler.ProtectedCalls);
+    }
+
+    [Fact]
+    public async Task AutomaticSyncWaitsForLocalProcessingAndResumesAfterTheQueueDrains()
+    {
+        using var folder = new TemporaryFolder();
+        var configStore = new ApiIntegrationConfigStore(Path.Combine(folder.Path, "api-config.json"));
+        _ = configStore.Load();
+        var requestSent = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handler = new StubHttpMessageHandler((_, _) => new HttpResponseMessage(HttpStatusCode.Created))
+        {
+            ProtectedResponderAsync = (_, _) =>
+            {
+                requestSent.TrySetResult(true);
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Created));
+            },
+        };
+        using var client = new HttpClient(handler);
+        using var service = CreateService(configStore, Path.Combine(folder.Path, "api-sync-queue.json"), client);
+        await service.QueueReplayAsync(CreateMatch(), WriteReplay(folder.Path));
+        service.SetLocalProcessing(true);
+        service.Start();
+
+        await Task.Delay(100);
+        Assert.Equal(0, handler.AuthCalls);
+        Assert.Equal(0, handler.ProtectedCalls);
+
+        service.SetLocalProcessing(false);
+        await requestSent.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (service.State.Pending > 0 && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(20);
+        }
+
+        Assert.Equal(1, handler.ProtectedCalls);
+        Assert.Equal(0, service.State.Pending);
+    }
+
+    [Fact]
+    public async Task SyncFinishesInFlightRequestThenPausesBeforeTheNextReplay()
+    {
+        using var folder = new TemporaryFolder();
+        var configStore = new ApiIntegrationConfigStore(Path.Combine(folder.Path, "api-config.json"));
+        _ = configStore.Load();
+        var firstRequestStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstRequest = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handlerRequestCount = 0;
+        var handler = new StubHttpMessageHandler((_, _) => new HttpResponseMessage(HttpStatusCode.Created))
+        {
+            ProtectedResponderAsync = async (_, cancellationToken) =>
+            {
+                if (Interlocked.Increment(ref handlerRequestCount) == 1)
+                {
+                    firstRequestStarted.TrySetResult(true);
+                    await releaseFirstRequest.Task.WaitAsync(cancellationToken);
+                }
+                return new HttpResponseMessage(HttpStatusCode.Created);
+            },
+        };
+        using var client = new HttpClient(handler);
+        using var service = CreateService(configStore, Path.Combine(folder.Path, "api-sync-queue.json"), client);
+        var firstReplay = WriteReplay(folder.Path);
+        var secondReplay = WriteReplay(folder.Path);
+        File.WriteAllText(firstReplay.FullName, "first replay");
+        File.WriteAllText(secondReplay.FullName, "second replay");
+        await service.QueueReplayAsync(CreateMatch(), firstReplay);
+        await service.QueueReplayAsync(CreateMatch(), secondReplay);
+
+        var syncTask = service.SyncNowAsync();
+        await firstRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        service.SetLocalProcessing(true);
+        releaseFirstRequest.TrySetResult(true);
+        await Task.Delay(100);
+
+        Assert.Equal(1, handler.ProtectedCalls);
+        Assert.False(syncTask.IsCompleted);
+
+        service.SetLocalProcessing(false);
+        var summary = await syncTask.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(2, summary.Synchronized);
+        Assert.Equal(2, handler.ProtectedCalls);
+    }
+
+    [Fact]
     public async Task SyncBuffersAuthenticationResponseBeforeReadingItsDiagnosticPreview()
     {
         using var folder = new TemporaryFolder();
@@ -793,9 +902,12 @@ public sealed class ApiSyncServiceTests
         Func<HttpRequestMessage, string, HttpResponseMessage> respond) : HttpMessageHandler
     {
         private int _authCalls;
+        private int _protectedCalls;
         public int AuthCalls => _authCalls;
+        public int ProtectedCalls => _protectedCalls;
         public string? LastAuthAuthorization { get; private set; }
         public Func<HttpRequestMessage, HttpResponseMessage>? AuthResponder { get; set; }
+        public Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>? ProtectedResponderAsync { get; set; }
         public TimeSpan AuthDelay { get; set; }
 
         protected override async Task<HttpResponseMessage> SendAsync(
@@ -811,6 +923,12 @@ public sealed class ApiSyncServiceTests
                     await Task.Delay(AuthDelay, cancellationToken);
                 }
                 return AuthResponder?.Invoke(request) ?? TokenResponse(TestJwt);
+            }
+
+            Interlocked.Increment(ref _protectedCalls);
+            if (ProtectedResponderAsync is { } protectedResponder)
+            {
+                return await protectedResponder(request, cancellationToken);
             }
 
             var body = request.Content == null ? "" : await request.Content.ReadAsStringAsync(cancellationToken);

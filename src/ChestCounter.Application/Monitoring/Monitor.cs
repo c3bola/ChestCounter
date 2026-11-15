@@ -2,12 +2,41 @@ using System.Runtime.Versioning;
 
 namespace ChestCounter;
 
+public enum LocalReplayPhase
+{
+    Identifying,
+    Processing,
+    Waiting,
+    Completed,
+    Failed,
+}
+
+public sealed record LocalReplayProgress(
+    LocalReplayPhase Phase,
+    int BatchNumber,
+    int Processed,
+    int Total,
+    int UpdatedRecords,
+    int Failed,
+    int Skipped,
+    int Waiting,
+    string? CurrentReplay)
+{
+    public int Remaining => Math.Max(0, Total - Processed);
+    public double Percent => Total <= 0 ? 0 : Math.Clamp(Processed * 100.0 / Total, 0, 100);
+
+    public static LocalReplayProgress Initial { get; } =
+        new(LocalReplayPhase.Identifying, 0, 0, 0, 0, 0, 0, 0, null);
+}
+
 /// <summary>Lo que muestra la ventana.</summary>
 public sealed record MonitorState(OverlayState Overlay, IReadOnlyList<Profile> Profiles, string? CurrentKey, UpdateInfo? Update, string? Notice, bool AutoCloseOffer, ChestStats Stats)
 {
     /// <summary>Equipo de la partida en curso o de la última (null si «Compañeros» está desactivado).</summary>
     public TeamSummary? Team { get; init; }
     public bool PirateTokenLive { get; init; }
+    public LocalReplayProgress LocalProgress { get; init; } = LocalReplayProgress.Initial;
+    public bool LocalPriorityActive { get; init; } = true;
 }
 
 /// <summary>Un compañero y los cofres que se le vieron abrir (un mínimo).</summary>
@@ -62,6 +91,7 @@ public sealed class Monitor
 {
     /// <summary>Protege solo la configuración (escrituras cortas desde la ventana, el overlay y el hilo de vigilancia).</summary>
     private readonly object _cfgGate = new();
+    private readonly object _localWorkGate = new();
     private readonly IMonitorStorage _store;
     private readonly Config _config;
     private readonly TrackerData _data;
@@ -86,6 +116,10 @@ public sealed class Monitor
     private DateTime? _fortniteClosedSince;
     private DateTime? _autoCloseAt;
     private bool _closeRequested;
+    private readonly object _localProgressGate = new();
+    private LocalReplayProgress _localProgress = LocalReplayProgress.Initial;
+    private bool _localWorkPending = true;
+    private long _localWorkGeneration;
 
     public Monitor(IMonitorStorage store, Config config, TrackerData data, IMonitorTracking tracker, string dataDir, IOverlayHost overlayHost, MonitorDependencies services)
     {
@@ -96,6 +130,7 @@ public sealed class Monitor
         _dataDir = dataDir;
         _overlayHost = overlayHost;
         _services = services;
+        _tracker.LocalProgressChanged += OnLocalProgressChanged;
     }
 
     /// <summary>Ajustes actuales (leer; los cambios se hacen con <see cref="Change"/>).</summary>
@@ -120,6 +155,9 @@ public sealed class Monitor
 
     /// <summary>Estado nuevo. Se llama desde el hilo de vigilancia: la ventana debe usar BeginInvoke.</summary>
     public event Action<MonitorState>? Changed;
+
+    /// <summary>Indica al sincronizador cuándo debe pausar o reanudar el envío remoto.</summary>
+    public event Action<bool>? LocalProcessingChanged;
 
     /// <summary>Pide cerrar la ventana (Fortnite cerrado, o nueva versión instalada). Desde otro hilo.</summary>
     public event Action? CloseRequested;
@@ -182,6 +220,7 @@ public sealed class Monitor
         _services.Obs.Stop();
         _overlayHost.Stop();
         _watcher?.Dispose();
+        _tracker.LocalProgressChanged -= OnLocalProgressChanged;
     }
 
     /// <summary>Mensaje de estado de la ventana (por ejemplo, el reanálisis tras una actualización).</summary>
@@ -483,6 +522,9 @@ public sealed class Monitor
             var changed = first || _publishRequested;
             first = false;
             _publishRequested = false;
+            var localScanCompleted = false;
+            var localScanStarted = false;
+            var localWorkGeneration = 0L;
 
             ResetRequest? reset;
             lock (_cfgGate)
@@ -530,9 +572,18 @@ public sealed class Monitor
             {
                 if (DateTime.UtcNow >= _nextScan)
                 {
+                    var priorityChanged = SetLocalWorkPending(true);
+                    if (priorityChanged)
+                    {
+                        PublishProgressSafely();
+                    }
+                    localWorkGeneration = GetLocalWorkGeneration();
+                    localScanStarted = true;
                     var added = _tracker.Scan();
                     var liveChanged = _tracker.UpdateLive();
+                    changed |= MarkLocalScanRecovered();
                     changed |= added > 0 || liveChanged;
+                    localScanCompleted = true;
 
                     // Partida en curso: se relee cada 15 s. Replay terminado: enseguida. Si no, un escaneo de respaldo.
                     _nextScan = DateTime.UtcNow.AddSeconds(_tracker.IsFinishing ? 2 : _tracker.HasPending ? 15 : (_watcher != null && !AutoMode ? 60 : 10));
@@ -545,6 +596,11 @@ public sealed class Monitor
             catch (Exception ex)
             {
                 _services.Errors.Write("Vigilancia", ex);
+                if (localScanStarted && !localScanCompleted)
+                {
+                    SetLocalProgressFailed();
+                    PublishProgressSafely();
+                }
             }
 
             changed |= CheckUpdate();
@@ -558,9 +614,194 @@ public sealed class Monitor
                 _publishRequested = false;
                 Publish();
             }
+            if (localScanCompleted)
+            {
+                CompleteLocalWorkIfDrained(localWorkGeneration);
+            }
 
             // Espera a que pase algo (cambio de archivo, ajuste) o un segundo.
             _wake.WaitOne(TimeSpan.FromSeconds(1));
+        }
+    }
+
+    private void OnLocalProgressChanged(LocalReplayProgress progress)
+    {
+        lock (_localProgressGate)
+        {
+            _localProgress = progress;
+        }
+        PublishProgressSafely();
+    }
+
+    private void PublishProgressSafely()
+    {
+        try
+        {
+            Publish();
+        }
+        catch (Exception ex)
+        {
+            _services.Errors.Write("Publish replay processing progress", ex);
+        }
+    }
+
+    private void SetLocalProgressIdentifying()
+    {
+        lock (_localProgressGate)
+        {
+            if (_localProgress.Phase == LocalReplayPhase.Processing)
+            {
+                return;
+            }
+            _localProgress = new LocalReplayProgress(
+                LocalReplayPhase.Identifying,
+                _localProgress.BatchNumber,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                null);
+        }
+        RequestPublish();
+    }
+
+    private void SetLocalProgressFailed()
+    {
+        lock (_localProgressGate)
+        {
+            _localProgress = _localProgress with { Phase = LocalReplayPhase.Failed };
+        }
+    }
+
+    private bool MarkLocalScanRecovered()
+    {
+        lock (_localProgressGate)
+        {
+            if (_localProgress.Phase != LocalReplayPhase.Failed)
+            {
+                return false;
+            }
+            _localProgress = _localProgress with { Phase = LocalReplayPhase.Completed, CurrentReplay = null };
+            return true;
+        }
+    }
+
+    private bool SetLocalWorkPending(bool pending)
+    {
+        var changed = false;
+        lock (_localWorkGate)
+        {
+            if (pending)
+            {
+                _localWorkGeneration++;
+            }
+            changed = _localWorkPending != pending;
+            _localWorkPending = pending;
+            if (changed)
+            {
+                try
+                {
+                    LocalProcessingChanged?.Invoke(pending);
+                }
+                catch (Exception ex)
+                {
+                    _services.Errors.Write("Notify replay processing priority", ex);
+                }
+            }
+        }
+        return changed;
+    }
+
+    private LocalReplayProgress GetLocalProgress()
+    {
+        lock (_localProgressGate)
+        {
+            return _localProgress;
+        }
+    }
+
+    private bool IsLocalWorkPending
+    {
+        get
+        {
+            lock (_localWorkGate)
+            {
+                return _localWorkPending;
+            }
+        }
+    }
+
+    private long GetLocalWorkGeneration()
+    {
+        lock (_localWorkGate)
+        {
+            return _localWorkGeneration;
+        }
+    }
+
+    public void ResumeSynchronizationIfLocalWorkIsDrained(Action resume)
+    {
+        lock (_localWorkGate)
+        {
+            if (!_localWorkPending)
+            {
+                resume();
+            }
+        }
+    }
+
+    public void SubscribeToLocalProcessing(Action<bool> observer)
+    {
+        lock (_localWorkGate)
+        {
+            LocalProcessingChanged += observer;
+            observer(_localWorkPending);
+        }
+    }
+
+    public void UnsubscribeFromLocalProcessing(Action<bool> observer)
+    {
+        lock (_localWorkGate)
+        {
+            LocalProcessingChanged -= observer;
+        }
+    }
+
+    private void CompleteLocalWorkIfDrained(long scanGeneration)
+    {
+        if (_tracker.BacklogCount() > 0)
+        {
+            return;
+        }
+
+        lock (_localWorkGate)
+        {
+            if (!_localWorkPending || _localWorkGeneration != scanGeneration)
+            {
+                return;
+            }
+            _localWorkPending = false;
+        }
+
+        try
+        {
+            Publish();
+        }
+        catch (Exception ex)
+        {
+            _services.Errors.Write("Publish completed local replay processing", ex);
+            return;
+        }
+
+        try
+        {
+            LocalProcessingChanged?.Invoke(false);
+        }
+        catch (Exception ex)
+        {
+            _services.Errors.Write("Notify replay processing priority", ex);
         }
     }
 
@@ -598,6 +839,8 @@ public sealed class Monitor
                 && _tracker.LiveMatch != null
                 && Profiles.Counted(_tracker.LiveMatch, _config)
                 && Profiles.Adjust(_tracker.LiveMatch, _config)!.PirateTokenSeen,
+            LocalProgress = GetLocalProgress(),
+            LocalPriorityActive = IsLocalWorkPending,
         };
         Changed?.Invoke(state);
     }
@@ -818,15 +1061,22 @@ public sealed class Monitor
                     NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size,
                     EnableRaisingEvents = true,
                 };
-                _watcher.Created += (_, _) => Wake();
-                _watcher.Changed += (_, _) => Wake();
-                _watcher.Renamed += (_, _) => Wake();
+                _watcher.Created += OnReplayFileChanged;
+                _watcher.Changed += OnReplayFileChanged;
+                _watcher.Renamed += OnReplayFileChanged;
             }
         }
         catch
         {
             _watcher = null; // escaneo periódico de respaldo
         }
+    }
+
+    private void OnReplayFileChanged(object? sender, FileSystemEventArgs e)
+    {
+        SetLocalWorkPending(true);
+        SetLocalProgressIdentifying();
+        Wake();
     }
 
     private void Wake()

@@ -37,6 +37,7 @@ public sealed class ApiSyncService : IDisposable
     private readonly bool _ownsHttpClient;
     private readonly object _queueGate = new();
     private readonly object _requestGate = new();
+    private readonly object _localProcessingGate = new();
     private readonly object _diagnosticsGate = new();
     private readonly SemaphoreSlim _syncGate = new(1, 1);
     private readonly SemaphoreSlim _manualOperationGate = new(1, 1);
@@ -46,6 +47,7 @@ public sealed class ApiSyncService : IDisposable
     private readonly List<QueueEntry> _queue;
     private readonly string? _queueLoadError;
     private TaskCompletionSource<bool> _requestsIdle = CompletedSource();
+    private TaskCompletionSource<bool> _localIdle = CompletedSource();
     private int _activeRequests;
     private Task? _worker;
     private volatile bool _isSyncing;
@@ -56,6 +58,7 @@ public sealed class ApiSyncService : IDisposable
     private int _failed;
     private bool _started;
     private bool _disposed;
+    private bool _localProcessing;
 
     public ApiSyncService(
         ApiIntegrationConfigStore configStore,
@@ -152,6 +155,35 @@ public sealed class ApiSyncService : IDisposable
         SignalWorker();
     }
 
+    public void SetLocalProcessing(bool processing)
+    {
+        TaskCompletionSource<bool>? localIdle = null;
+        lock (_localProcessingGate)
+        {
+            if (_localProcessing == processing)
+            {
+                return;
+            }
+
+            _localProcessing = processing;
+            if (processing)
+            {
+                _localIdle = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+            else
+            {
+                localIdle = _localIdle;
+                _localIdle = CompletedSource();
+            }
+        }
+
+        if (localIdle != null)
+        {
+            localIdle.TrySetResult(true);
+            SignalWorker();
+        }
+    }
+
     public void QueueReplay(MatchRecord match, FileInfo replayFile)
     {
         if (match.ReplayFileSha256 is { Length: 64 } fileSha256)
@@ -174,11 +206,14 @@ public sealed class ApiSyncService : IDisposable
         _ = EnqueueSafelyAsync(match, replayFile);
     }
 
-    public Task QueueReplayAsync(
+    public async Task QueueReplayAsync(
         MatchRecord match,
         FileInfo replayFile,
-        CancellationToken cancellationToken = default) =>
-        EnqueueAsync(match, replayFile, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        await WaitForLocalProcessingToFinishAsync(cancellationToken).ConfigureAwait(false);
+        await EnqueueAsync(match, replayFile, cancellationToken).ConfigureAwait(false);
+    }
 
     public void QueueHistorical(TrackerData data, IEnumerable<FileInfo> replayFiles)
     {
@@ -298,6 +333,7 @@ public sealed class ApiSyncService : IDisposable
 
     private async Task<ApiSyncSummary> SyncNowCoreAsync(CancellationToken cancellationToken)
     {
+        await WaitForLocalProcessingToFinishAsync(cancellationToken).ConfigureAwait(false);
         if (_queueLoadError != null)
         {
             CompleteOperation("Synchronization not started: the local queue could not be read.", ApiDiagnosticSeverity.Error);
@@ -406,6 +442,7 @@ public sealed class ApiSyncService : IDisposable
 
     private async Task<string> TestConnectionCoreAsync(CancellationToken cancellationToken)
     {
+        await WaitForLocalProcessingToFinishAsync(cancellationToken).ConfigureAwait(false);
         BeginOperation("Connection test", "Validating API configuration", "Starting a read-only API connection test.");
         ReportDiagnostic(ApiDiagnosticSeverity.Information, "Connection test requested.");
         var config = _configStore.Load();
@@ -668,6 +705,15 @@ public sealed class ApiSyncService : IDisposable
         var synchronized = 0;
         try
         {
+            if (manual)
+            {
+                await WaitForLocalProcessingToFinishAsync(cancellationToken).ConfigureAwait(false);
+            }
+            else if (IsLocalProcessing())
+            {
+                return synchronized;
+            }
+
             var config = _configStore.Load();
             if (_configStore.LoadError != null || !config.Enabled)
             {
@@ -726,6 +772,7 @@ public sealed class ApiSyncService : IDisposable
             SetStatus($"Synchronizing {due.Length} replay(s)...");
             foreach (var entry in due)
             {
+                await WaitForLocalProcessingToFinishAsync(cancellationToken).ConfigureAwait(false);
                 cancellationToken.ThrowIfCancellationRequested();
                 UpdateProgress("Processing replay", $"Processing {entry.ReplayFile.FileName}.", entry.ReplayFile.FileName);
                 ReportDiagnostic(
@@ -905,10 +952,22 @@ public sealed class ApiSyncService : IDisposable
         HttpResponseMessage response;
         try
         {
-            response = await _httpClient.SendAsync(
-                request,
-                HttpCompletionOption.ResponseHeadersRead,
-                cancellationToken).ConfigureAwait(false);
+            Task<HttpResponseMessage>? sendTask = null;
+            while (sendTask == null)
+            {
+                await WaitForLocalProcessingToFinishAsync(cancellationToken).ConfigureAwait(false);
+                lock (_localProcessingGate)
+                {
+                    if (!_localProcessing)
+                    {
+                        sendTask = _httpClient.SendAsync(
+                            request,
+                            HttpCompletionOption.ResponseHeadersRead,
+                            cancellationToken);
+                    }
+                }
+            }
+            response = await sendTask.ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException)
         {
@@ -1468,6 +1527,24 @@ public sealed class ApiSyncService : IDisposable
         var source = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         source.SetResult(true);
         return source;
+    }
+
+    private bool IsLocalProcessing()
+    {
+        lock (_localProcessingGate)
+        {
+            return _localProcessing;
+        }
+    }
+
+    private async Task WaitForLocalProcessingToFinishAsync(CancellationToken cancellationToken)
+    {
+        Task wait;
+        lock (_localProcessingGate)
+        {
+            wait = _localProcessing ? _localIdle.Task : Task.CompletedTask;
+        }
+        await wait.WaitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private void SignalForShutdown()

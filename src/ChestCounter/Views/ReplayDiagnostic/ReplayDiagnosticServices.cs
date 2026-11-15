@@ -374,6 +374,18 @@ internal sealed class ReplayDiagnosticApiSender
             new ApiIntegrationConfigStore(runtime.ApiSync.ConfigurationPath),
             Path.Combine(tempDirectory, "api-sync-queue.json"),
             httpClient);
+        Action<bool> localProcessingChanged = processing =>
+        {
+            if (processing)
+            {
+                service.SetLocalProcessing(true);
+            }
+            else
+            {
+                runtime.Monitor.ResumeSynchronizationIfLocalWorkIsDrained(() => service.SetLocalProcessing(false));
+            }
+        };
+        runtime.Monitor.SubscribeToLocalProcessing(localProcessingChanged);
         Action<ApiOperationLogEntry> captureDiagnostic = entry =>
         {
             diagnostics.Enqueue(entry);
@@ -401,6 +413,7 @@ internal sealed class ReplayDiagnosticApiSender
         }
         finally
         {
+            runtime.Monitor.UnsubscribeFromLocalProcessing(localProcessingChanged);
             service.DiagnosticReported -= captureDiagnostic;
             service.ProgressChanged -= progressHandler;
             service.Dispose();

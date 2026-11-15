@@ -21,6 +21,8 @@ public sealed class Tracker : IMonitorTracking
     private readonly Config _config;
     private readonly TrackerData _data;
     private readonly Dictionary<string, long> _lastSeenSize = new();
+    private LocalReplayProgress? _lastProgress;
+    private int _batchNumber;
 
     public Tracker(Store store, Config config, TrackerData data)
     {
@@ -44,6 +46,8 @@ public sealed class Tracker : IMonitorTracking
     public TrackerData Data => _data;
 
     public event Action<MatchRecord, FileInfo>? MatchPersisted;
+    public event Action? ReplayProcessed;
+    public event Action<LocalReplayProgress>? LocalProgressChanged;
 
     /// <summary>True while a replay is waiting to be finished / to become stable.</summary>
     public bool HasPending { get; private set; }
@@ -118,6 +122,7 @@ public sealed class Tracker : IMonitorTracking
         HasPending = false;
         IsFinishing = false;
         var ready = new List<FileInfo>();
+        var waiting = 0;
         foreach (var file in UnprocessedFiles().ToList())
         {
             file.Refresh();
@@ -128,19 +133,45 @@ public sealed class Tracker : IMonitorTracking
             if (!IsReady(file, ignoreQuietPeriod))
             {
                 HasPending = true;
+                waiting++;
                 continue;
             }
             ready.Add(file);
         }
         if (ready.Count == 0)
         {
+            if (HasPending)
+            {
+                PublishLocalProgress(new LocalReplayProgress(
+                    LocalReplayPhase.Waiting, _batchNumber, 0, 0, 0, 0, 0, waiting, null));
+            }
+            else if (_lastProgress?.Phase != LocalReplayPhase.Completed)
+            {
+                var previous = _lastProgress;
+                PublishLocalProgress(new LocalReplayProgress(
+                    LocalReplayPhase.Completed,
+                    previous?.BatchNumber ?? _batchNumber,
+                    previous?.Processed ?? 0,
+                    previous?.Total ?? 0,
+                    previous?.UpdatedRecords ?? 0,
+                    previous?.Failed ?? 0,
+                    previous?.Skipped ?? 0,
+                    0,
+                    null));
+            }
             return 0;
         }
 
+        var batchNumber = ++_batchNumber;
         var batch = ready.Count >= 2;
         var profilesBefore = Profiles.List(_data).Count;
         var bar = batch ? new ProgressBar(L.T("tracker.analyzing_replays"), ready.Count) : null;
         var outcomes = new List<Outcome>();
+        var updatedRecords = 0;
+        var failed = 0;
+        var skipped = 0;
+        PublishLocalProgress(new LocalReplayProgress(
+            LocalReplayPhase.Processing, batchNumber, 0, ready.Count, 0, 0, 0, waiting, ready[0].Name));
         for (var i = 0; i < ready.Count; i++)
         {
             var file = ready[i];
@@ -163,11 +194,45 @@ public sealed class Tracker : IMonitorTracking
 
             var outcome = Process(file);
             outcomes.Add(outcome);
+            if (outcome.Match != null) updatedRecords++;
+            if (outcome.Error != null) failed++;
+            if (outcome.Skipped != null) skipped++;
+
+            var processed = i + 1;
+            PublishLocalProgress(new LocalReplayProgress(
+                LocalReplayPhase.Processing,
+                batchNumber,
+                processed,
+                ready.Count,
+                updatedRecords,
+                failed,
+                skipped,
+                waiting,
+                processed < ready.Count ? ready[processed].Name : null));
+            try
+            {
+                ReplayProcessed?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                ErrorLog.Write($"Publish replay processing progress ({file.Name})", ex);
+            }
             if (!batch)
             {
                 PrintOutcome(outcome);
             }
         }
+
+        PublishLocalProgress(new LocalReplayProgress(
+            waiting > 0 ? LocalReplayPhase.Waiting : LocalReplayPhase.Completed,
+            batchNumber,
+            ready.Count,
+            ready.Count,
+            updatedRecords,
+            failed,
+            skipped,
+            waiting,
+            null));
 
         if (batch)
         {
@@ -187,6 +252,19 @@ public sealed class Tracker : IMonitorTracking
             ReportWriter.WriteAll(_store, _config, _data);
         }
         return added;
+    }
+
+    private void PublishLocalProgress(LocalReplayProgress progress)
+    {
+        _lastProgress = progress;
+        try
+        {
+            LocalProgressChanged?.Invoke(progress);
+        }
+        catch (Exception ex)
+        {
+            ErrorLog.Write("Publish local replay progress", ex);
+        }
     }
 
     /// <summary>Set when a scan found replays of a second account: the player should choose their profile.</summary>
@@ -279,14 +357,6 @@ public sealed class Tracker : IMonitorTracking
         _data.Matches.Add(record);
         _data.ProcessedFiles[key] = record.SessionId;
         _store.SaveData(_data);
-        try
-        {
-            MatchPersisted?.Invoke(record, file);
-        }
-        catch (Exception ex)
-        {
-            ErrorLog.Write($"Queue replay synchronization ({file.Name})", ex);
-        }
         if (_liveFile == file.FullName)
         {
             ClearLive(); // the final analysis replaces the live estimate
@@ -304,6 +374,14 @@ public sealed class Tracker : IMonitorTracking
         }
 
         var newIds = _store.RegisterPrizeIds(record.AllTreasureFinds.Where(f => f.PrizeId != null).Select(f => f.PrizeId!));
+        try
+        {
+            MatchPersisted?.Invoke(record, file);
+        }
+        catch (Exception ex)
+        {
+            ErrorLog.Write($"Queue replay synchronization ({file.Name})", ex);
+        }
         return new Outcome(record, Updated: existing != null, NewPrizeIds: newIds);
     }
 
