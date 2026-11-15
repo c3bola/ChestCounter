@@ -142,24 +142,41 @@ public sealed class ReplayRawDataTests
     }
 
     [Fact]
-    public void InternalRawReplayDataIsNotAddedToApiIngestionJson()
+    public void RawReplayDataUsesApiDataFieldWithoutDuplicateProperty()
     {
-        using var players = JsonDocument.Parse("""[{"id":7,"locations":[{"vehicle":300}]}]""");
         var match = new MatchRecord
         {
             SessionId = "session-raw-data",
             RawReplayData = new ReplayRawData
             {
                 ParseMode = "Full",
-                Players = players.RootElement.Clone(),
+                Match = ParseJson("""{"source":"test"}"""),
+                Players = ParseJson("""[{"id":7,"locations":[{"vehicle":300}]}]"""),
+                Teams = ParseJson("[]"),
+                EventEliminations = ParseJson("[]"),
+                KillFeed = ParseJson("[]"),
+                Map = ParseJson("{}"),
+                Weapons = ParseJson("[]"),
+                Observations = ParseJson("{}"),
             },
         };
         var replayHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("replay"))).ToLowerInvariant();
 
         var snapshot = ReplayIngestionMapper.Create(match, "match.replay", replayHash, null, null, "1.0", "1.0");
         var requestJson = JsonSerializer.Serialize(snapshot.Request, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        using var requestDocument = JsonDocument.Parse(requestJson);
+        var data = requestDocument.RootElement.GetProperty("data");
+        var player = Assert.Single(data.GetProperty("players").EnumerateArray());
 
         Assert.DoesNotContain("rawReplayData", requestJson, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("\"players\":[{\"id\":7", requestJson, StringComparison.Ordinal);
+        Assert.Equal("Full", data.GetProperty("parseMode").GetString());
+        Assert.Equal(7, player.GetProperty("id").GetInt32());
+        Assert.Equal(300, player.GetProperty("locations")[0].GetProperty("vehicle").GetInt32());
+    }
+
+    private static JsonElement ParseJson(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement.Clone();
     }
 }

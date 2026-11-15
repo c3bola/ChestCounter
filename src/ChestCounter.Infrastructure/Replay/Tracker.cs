@@ -416,9 +416,8 @@ public sealed class Tracker : IMonitorTracking
         {
             try
             {
-                using var ms = new MemoryStream(bytes, writable: false);
                 // The replays saved on a PC are those of its player: the replay owner is tracked (one profile per account).
-                result = new ReplayAnalyzer().Analyze(ms, file.Name, "");
+                result = new ReplayAnalyzer().Analyze(bytes.AsMemory(), file.Name, "");
             }
             catch (Exception e)
             {

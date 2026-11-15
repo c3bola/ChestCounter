@@ -33,22 +33,24 @@ public class ReplayReader : Unreal.Core.ReplayReader<FortniteReplay>
     public FortniteReplay ReadReplay(string fileName)
     {
         var bytes = File.ReadAllBytes(fileName);
-        using var archive = new Unreal.Core.BinaryReader(bytes);
-
-        Builder = new FortniteReplayBuilder();
-        ReadReplay(archive);
-
-        return Builder.Build(Replay);
+        return ReadReplay(bytes.AsMemory());
     }
 
     public FortniteReplay ReadReplay(Stream stream)
+        => ReadReplayArchive(new Unreal.Core.BinaryReader(stream));
+
+    public FortniteReplay ReadReplay(ReadOnlyMemory<byte> data)
+        => ReadReplayArchive(new Unreal.Core.BinaryReader(data));
+
+    private FortniteReplay ReadReplayArchive(Unreal.Core.BinaryReader archive)
     {
-        using var archive = new Unreal.Core.BinaryReader(stream);
+        using (archive)
+        {
+            Builder = new FortniteReplayBuilder();
+            ReadReplay(archive);
 
-        Builder = new FortniteReplayBuilder();
-        ReadReplay(archive);
-
-        return Builder.Build(Replay);
+            return Builder.Build(Replay);
+        }
     }
 
     private string _branch;

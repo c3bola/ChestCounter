@@ -2,6 +2,8 @@
 
 Original code: https://github.com/Shiqan/FortniteReplayDecompressor (MIT license, see LICENSE-FortniteReplayDecompressor), commit 76f74c1.
 
+The vendored baseline already includes upstream commit `76f74c1` (3.1.0) performance work: zero-copy packet/memory reads, reusable bunch and bit-reader buffers, faster primitive reads, direct NetGUID export-group caching, and span-based AES decryption. Upstream reports 34%-38% fewer heap allocations, 10%-25% faster parsing, and about 50% less Gen 0 pressure; these are upstream benchmark results, not a local before/after guarantee.
+
 Upstream improvements from the local `reference/FortniteReplayDecompressor-master` 3.1.1 source are also integrated:
 
 - `NetFieldParser`: prefix export-group matching and optional ignored group types, while retaining ChestCounter's export-group and ClassNetCache alias resolvers.
@@ -25,3 +27,5 @@ Changes for ChestCounter:
 10. `Unreal.Core/ReplayReader.cs` + `BinaryReader.cs`: reading a replay **still being written**. `ReadReplayChunks` stops at the last complete chunk (`IsPartialReplay`, `BinaryReader.Length`), and an encrypted replay flagged "live" is accepted when its key is present.
 11. `Unreal.Core/ReplayReader.cs`: in a "live" replay, an event or data chunk that cannot be decrypted is skipped, or stops the reading, instead of failing the analysis. Note: during the match, Fortnite leaves the encryption key at zero in the header and only writes the real key at the end. The data of a match in progress therefore cannot be read (`ReplayHeaderProbe.KeyMissing`).
 12. `NoWarn` in the `.csproj` files of `Unreal.Core`, `OozSharp` and `FortniteReplayReader`: silences the upstream warnings (nullability in `KeyList`/`FortniteReplayBuilder`, obsolete `ChType`, unreachable code in `Kraken`).
+13. `FortniteReplayReader.ReadReplay(ReadOnlyMemory<byte>)`: parses in-memory replay data without copying the complete input buffer. `Tracker` uses this path after reading bytes for hashing.
+14. `ReplayAnalyzer.CaptureRawReplayData`: serialize projected sequences directly instead of materializing temporary arrays first.

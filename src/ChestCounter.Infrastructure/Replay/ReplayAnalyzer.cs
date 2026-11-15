@@ -319,7 +319,7 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
 
     private ReplayRawData CaptureRawReplayData(FortniteReplay replay)
     {
-        var players = replay.PlayerData?.ToArray() ?? Array.Empty<PlayerData>();
+        IEnumerable<PlayerData> players = replay.PlayerData ?? Array.Empty<PlayerData>();
         foreach (var movement in players.SelectMany(player => player.Locations))
         {
             if (movement.Vehicle is uint vehicle && _netGuidCache.TryGetPathName(vehicle, out var path))
@@ -391,7 +391,7 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
                 replayLengthInMilliseconds = replay.Info?.LengthInMs,
                 replayBranch = replay.Header?.Branch,
             }, RawReplayJson),
-            Players = JsonSerializer.SerializeToElement(players.Select(CreateRawPlayer).ToArray(), RawReplayJson),
+            Players = JsonSerializer.SerializeToElement(players.Select(CreateRawPlayer), RawReplayJson),
             Teams = JsonSerializer.SerializeToElement(
                 (replay.TeamData ?? Array.Empty<TeamData>()).Select(team => new
                 {
@@ -401,7 +401,7 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
                     team.PartyOwnerId,
                     team.Placement,
                     team.TeamKills,
-                }).ToArray(),
+                }),
                 RawReplayJson),
             EventEliminations = JsonSerializer.SerializeToElement(replay.Eliminations.Select(elimination => new
             {
@@ -425,7 +425,7 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
                 elimination.GunType,
                 elimination.Knocked,
                 libraryDistance = elimination.Distance,
-            }).ToArray(), RawReplayJson),
+            }), RawReplayJson),
             KillFeed = JsonSerializer.SerializeToElement(replay.KillFeed.Select(entry => new
             {
                 entry.PlayerId,
@@ -443,7 +443,7 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
                 entry.DeathTags,
                 entry.IsDowned,
                 entry.IsRevived,
-            }).ToArray(), RawReplayJson),
+            }), RawReplayJson),
             Map = JsonSerializer.SerializeToElement(replay.MapData, RawReplayJson),
             Weapons = JsonSerializer.SerializeToElement(replay.Weapons, RawReplayJson),
             Observations = JsonSerializer.SerializeToElement(new
@@ -459,7 +459,7 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
                     destroyed = search.Destroyed,
                     alreadySearched = search.AlreadySearched,
                     searchAnimationCount = search.SearchAnimationCount,
-                }).ToArray(),
+                }),
                 droppedItems = _tosses.Select(item => new
                 {
                     timeSeconds = item.Time,
@@ -482,14 +482,14 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
                     item.TossState,
                     item.PickedUp,
                     item.OrderIndex,
-                }).ToArray(),
+                }),
                 equippedItems = _equips.Select(item => new
                 {
                     timeSeconds = item.Time,
                     item = item.Item,
                     pawnActorId = item.Pawn,
                     playerId = PlayerIdForPawn(item.Pawn),
-                }).ToArray(),
+                }),
                 treasureEvents = _prizes.Select(prize => new
                 {
                     timeSeconds = prize.Time,
@@ -497,7 +497,7 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
                     pawnActorId = prize.Pawn,
                     playerId = PlayerIdForPawn(prize.Pawn),
                     sourceContainer = string.IsNullOrEmpty(prize.Container) ? null : prize.Container,
-                }).ToArray(),
+                }),
                 prizeHandlerGrants = _grants.Select(grant => new
                 {
                     timeSeconds = grant.Time,
@@ -507,7 +507,7 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
                         : (int?)null,
                     elementId = grant.ElementId,
                     handler = grant.Handler,
-                }).ToArray(),
+                }),
             }, RawReplayJson),
         };
     }
@@ -579,7 +579,7 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
             movement.bIsParachuteOpen,
             movement.bIsParachuteForcedOpen,
             movement.bIsInWaterVolume,
-        }).ToArray(),
+        }),
     };
 
     private string PathOf(uint? guid)
@@ -801,9 +801,13 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
     /// </summary>
     /// <param name="username">Epic display name to track. If null/empty or not found, the replay owner is used.</param>
     public MatchRecord Analyze(Stream stream, string file, string? username)
-    {
-        var replay = ReadReplay(stream);
+        => Analyze(ReadReplay(stream), file, username);
 
+    public MatchRecord Analyze(ReadOnlyMemory<byte> replayData, string file, string? username)
+        => Analyze(ReadReplay(replayData), file, username);
+
+    private MatchRecord Analyze(FortniteReplay replay, string file, string? username)
+    {
         if (Environment.GetEnvironmentVariable("CHESTCOUNTER_DEBUG") == "4")
         {
             var groupFilter = new Regex(Environment.GetEnvironmentVariable("CHESTCOUNTER_PROBE_GROUPS") ?? "AbilitySpec", RegexOptions.IgnoreCase);
