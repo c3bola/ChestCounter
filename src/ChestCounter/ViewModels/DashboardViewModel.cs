@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Threading;
 using Avalonia.Media;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -12,16 +13,37 @@ internal sealed partial class DashboardViewModel : ObservableObject, IDisposable
     private static readonly IBrush Muted = new SolidColorBrush(Color.Parse("#C4CAD1"));
     private static readonly IBrush Green = new SolidColorBrush(Color.Parse("#28E66B"));
     private static readonly IBrush Cyan = new SolidColorBrush(Color.Parse("#00C8F5"));
+    private static readonly IBrush Amber = new SolidColorBrush(Color.Parse("#FFB84D"));
+    private static readonly IBrush Rose = new SolidColorBrush(Color.Parse("#FF6B7A"));
 
     private readonly RuntimeContext _runtime;
+    private readonly DispatcherTimer _completionTimer;
     private MonitorState? _state;
+    private ApiSyncState _apiState;
+    private ApiOperationProgress? _apiProgress;
+    private ApiAuthStatus _apiAuthStatus;
+    private MonitorState? _pendingState;
+    private int _uiRefreshQueued;
+    private int _lastCompletedLocalBatch;
+    private DateTimeOffset? _lastCompletedApiOperation;
+    private bool _showCompletionStatus;
+    private bool _isProcessingStatusExpanded;
+    private bool _disposed;
     private ProfileOption? _selectedProfile;
     private bool _syncingProfile;
 
     public DashboardViewModel(RuntimeContext runtime)
     {
         _runtime = runtime;
+        _apiState = runtime.ApiSync.State;
+        _apiProgress = runtime.ApiSync.Progress;
+        _apiAuthStatus = runtime.ApiSync.AuthStatus;
+        _completionTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
+        _completionTimer.Tick += OnCompletionTimerTick;
         runtime.Monitor.Changed += OnMonitorChanged;
+        runtime.ApiSync.StateChanged += OnApiStateChanged;
+        runtime.ApiSync.ProgressChanged += OnApiProgressChanged;
+        runtime.ApiSync.AuthStatusChanged += OnApiAuthStatusChanged;
     }
 
     public event Action? SettingsRequested;
@@ -73,6 +95,7 @@ internal sealed partial class DashboardViewModel : ObservableObject, IDisposable
                 OnPropertyChanged(nameof(OverlayStatus));
                 OnPropertyChanged(nameof(OverlayIndicator));
                 OnPropertyChanged(nameof(InstallText));
+                RefreshProcessingProgress();
                 RefreshMetrics();
                 RefreshDays();
                 RefreshProfiles();
@@ -112,6 +135,323 @@ internal sealed partial class DashboardViewModel : ObservableObject, IDisposable
     public IReadOnlyList<TeamMemberItem> TeamMembers { get; private set; } = Array.Empty<TeamMemberItem>();
     public IReadOnlyList<ProfileOption> Profiles { get; private set; } = Array.Empty<ProfileOption>();
 
+    public bool ShowProcessingStatus => HasProcessingActivity || _showCompletionStatus;
+    public bool IsProcessingStatusExpanded
+    {
+        get => _isProcessingStatusExpanded;
+        set
+        {
+            if (SetProperty(ref _isProcessingStatusExpanded, value))
+            {
+                OnPropertyChanged(nameof(ProcessingDetailsMaxHeight));
+                OnPropertyChanged(nameof(ProcessingDetailsOpacity));
+                OnPropertyChanged(nameof(ProcessingStatusChevron));
+                OnPropertyChanged(nameof(ProcessingStatusToggleLabel));
+            }
+        }
+    }
+    public double ProcessingDetailsMaxHeight => IsProcessingStatusExpanded ? 420 : 0;
+    public double ProcessingDetailsOpacity => IsProcessingStatusExpanded ? 1 : 0;
+    public Geometry ProcessingStatusChevron => IsProcessingStatusExpanded ? Glyphs.ChevronUp : Glyphs.ChevronDown;
+    public string ProcessingStatusToggleLabel => L.T(IsProcessingStatusExpanded ? "progress.collapse" : "progress.expand");
+
+    public string CompactStatusText
+    {
+        get
+        {
+            if (State != null)
+            {
+                if (LocalProgress.Phase == LocalReplayPhase.Failed || LocalProgress.Failed > 0)
+                {
+                    return LocalProgressStatus;
+                }
+                if (LocalProgress.Phase is LocalReplayPhase.Identifying or LocalReplayPhase.Processing or LocalReplayPhase.Waiting)
+                {
+                    return LocalProgressStatus;
+                }
+            }
+            if (_apiAuthStatus.State == ApiAuthState.Failed && HasApiWork)
+            {
+                return L.T("progress.compact_api_unavailable");
+            }
+            if (_apiState.IsSyncing)
+            {
+                return L.T("progress.compact_api_syncing");
+            }
+            if (ApiFailureCount > 0)
+            {
+                return L.T("progress.api_failed");
+            }
+            if (_apiState.Pending > 0)
+            {
+                return L.T(State?.LocalProgress.Phase == LocalReplayPhase.Completed
+                    ? "progress.local_complete"
+                    : "progress.api_waiting");
+            }
+            if (_showCompletionStatus)
+            {
+                return L.T("progress.compact_updated");
+            }
+            return "";
+        }
+    }
+    public string CompactProgressText
+    {
+        get
+        {
+            if (IsCompactShowingApiProgress)
+            {
+                return ApiProgressCountText;
+            }
+            if (State != null && LocalProgress.Total > 0)
+            {
+                var text = L.F("progress.compact_local_count", L.N(LocalProgress.Processed), L.N(LocalProgress.Total));
+                return LocalProgress.Waiting > 0
+                    ? text + " · " + L.F("progress.local_waiting_count", L.N(LocalProgress.Waiting))
+                    : text;
+            }
+            if (State != null && LocalProgress.Waiting > 0)
+            {
+                return L.F("progress.local_waiting_count", L.N(LocalProgress.Waiting));
+            }
+            return _apiState.Pending > 0 ? ApiProgressCountText : "";
+        }
+    }
+    public bool ShowCompactProgressText => CompactProgressText.Length > 0;
+    public string CompactProgressPercentText
+    {
+        get
+        {
+            if (IsCompactShowingApiProgress && _apiProgress?.Total is > 0)
+            {
+                return FormatPercent(Math.Clamp(_apiProgress.Processed * 100.0 / _apiProgress.Total.Value, 0, 100));
+            }
+            return State != null && LocalProgress.Total > 0 ? FormatPercent(LocalProgress.Percent) : "";
+        }
+    }
+    public bool ShowCompactProgressPercent => CompactProgressPercentText.Length > 0;
+    public double CompactProgressValue => IsCompactShowingApiProgress && _apiProgress?.Total is > 0
+        ? Math.Clamp(_apiProgress.Processed * 100.0 / _apiProgress.Total.Value, 0, 100)
+        : LocalProgress.Percent;
+    public bool ShowCompactProgressBar => IsCompactShowingApiProgress
+        || State != null && (LocalProgress.Total > 0
+            || LocalProgress.Phase == LocalReplayPhase.Identifying
+            || LocalProgress.Phase == LocalReplayPhase.Waiting && LocalProgress.Total == 0);
+    public bool CompactProgressIsIndeterminate => IsCompactShowingApiProgress
+        ? _apiProgress?.Total is not > 0
+        : State != null && (LocalProgress.Phase == LocalReplayPhase.Identifying
+            || LocalProgress.Phase == LocalReplayPhase.Waiting && LocalProgress.Total == 0);
+    public IBrush CompactProgressAccent => IsCompactShowingApiProgress ? ApiProgressAccent : LocalProgressAccent;
+    public string CompactSyncText
+    {
+        get
+        {
+            if (_apiAuthStatus.State == ApiAuthState.Failed && HasApiWork)
+            {
+                return L.T("progress.compact_sync_unavailable");
+            }
+            if (ApiFailureCount > 0)
+            {
+                return L.F("progress.compact_sync_failed", L.N(ApiFailureCount));
+            }
+            if (IsLocalPriorityActive)
+            {
+                return L.T(_apiState.IsSyncing
+                    ? "progress.compact_sync_finishing"
+                    : "progress.compact_sync_wait_local");
+            }
+            if (_apiState.IsSyncing)
+            {
+                return L.T("progress.compact_sync_sending");
+            }
+            if (_apiState.Pending > 0)
+            {
+                return L.F("progress.compact_sync_pending", L.N(_apiState.Pending));
+            }
+            return HasCompletedApiProgress
+                ? L.T("progress.compact_sync_done")
+                : L.T("progress.compact_sync_none");
+        }
+    }
+    public IBrush CompactSyncAccent => _apiAuthStatus.State == ApiAuthState.Failed || ApiFailureCount > 0
+        ? Amber
+        : IsLocalPriorityActive || _apiState.Pending > 0
+            ? Muted
+            : _apiState.IsSyncing ? Cyan
+            : HasCompletedApiProgress ? Green : Muted;
+
+    public string LocalProgressTitle => L.T("progress.local_title");
+    public string LocalProgressStatus => LocalProgress.Phase switch
+    {
+        LocalReplayPhase.Identifying => L.T("progress.local_identifying"),
+        LocalReplayPhase.Processing => L.T("progress.local_processing"),
+        LocalReplayPhase.Waiting => L.T("progress.local_waiting"),
+        LocalReplayPhase.Failed => L.T("progress.local_failed"),
+        LocalReplayPhase.Completed when LocalProgress.Failed > 0 => L.T("progress.local_complete_with_errors"),
+        _ => L.T("progress.local_complete"),
+    };
+    public string LocalBatchText => LocalProgress.BatchNumber > 0
+        ? L.F("progress.local_batch", L.N(LocalProgress.BatchNumber))
+        : "";
+    public bool ShowLocalBatch => LocalProgress.BatchNumber > 0
+        && (LocalProgress.Phase is LocalReplayPhase.Processing or LocalReplayPhase.Completed or LocalReplayPhase.Failed
+            || LocalProgress.Phase == LocalReplayPhase.Waiting && LocalProgress.Total > 0);
+    public string LocalProgressPercentText => LocalProgress.Total > 0
+        ? FormatPercent(LocalProgress.Percent)
+        : "";
+    public double LocalProgressValue => LocalProgress.Percent;
+    public bool LocalProgressIsIndeterminate => LocalProgress.Phase == LocalReplayPhase.Identifying
+        || LocalProgress.Phase == LocalReplayPhase.Waiting && LocalProgress.Total == 0;
+    public bool ShowLocalProgressBar => LocalProgress.Phase == LocalReplayPhase.Failed
+        ? LocalProgress.Total > 0
+        : LocalProgress.Phase != LocalReplayPhase.Completed || LocalProgress.Total > 0 || LocalProgress.Waiting > 0;
+    public string LocalProgressCountText => LocalProgress.Total > 0
+        ? L.F("progress.local_count", L.N(LocalProgress.Processed), L.N(LocalProgress.Total), L.N(LocalProgress.Remaining))
+        : LocalProgress.Waiting > 0
+            ? L.F("progress.local_waiting_count", L.N(LocalProgress.Waiting))
+            : L.T("progress.local_empty");
+    public bool ShowLocalProgressCount => LocalProgress.Phase != LocalReplayPhase.Failed
+        || LocalProgress.Total > 0
+        || LocalProgress.Waiting > 0;
+    public string LocalProgressDetailText
+    {
+        get
+        {
+            var details = new List<string>();
+            if (!string.IsNullOrWhiteSpace(LocalProgress.CurrentReplay))
+            {
+                details.Add(L.F("progress.current_replay", Path.GetFileName(LocalProgress.CurrentReplay)));
+            }
+            if (LocalProgress.Total > 0 && LocalProgress.Phase is LocalReplayPhase.Completed or LocalReplayPhase.Waiting)
+            {
+                details.Add(L.F(
+                    "progress.local_summary",
+                    L.N(LocalProgress.Processed),
+                    L.N(LocalProgress.UpdatedRecords),
+                    L.N(LocalProgress.Skipped),
+                    L.N(LocalProgress.Failed)));
+            }
+            if ((LocalProgress.Phase is LocalReplayPhase.Processing or LocalReplayPhase.Waiting)
+                && LocalProgress.Waiting > 0 && LocalProgress.Total > 0)
+            {
+                details.Add(L.F("progress.local_waiting_count", L.N(LocalProgress.Waiting)));
+            }
+            return string.Join(" · ", details);
+        }
+    }
+    public bool ShowLocalProgressDetail => LocalProgressDetailText.Length > 0;
+    public IBrush LocalProgressAccent => LocalProgress.Phase == LocalReplayPhase.Failed || LocalProgress.Failed > 0
+        ? Rose
+        : LocalProgress.Phase == LocalReplayPhase.Completed
+            ? Green
+            : LocalProgress.Phase == LocalReplayPhase.Waiting ? Amber : Cyan;
+
+    public string ApiProgressTitle => L.T("progress.api_title");
+    public string ApiProgressStatus
+    {
+        get
+        {
+            if (IsLocalPriorityActive)
+            {
+                return L.T(_apiState.IsSyncing ? "progress.api_wait_local_inflight" : "progress.api_wait_local");
+            }
+            if (_apiState.IsSyncing)
+            {
+                return L.T("progress.api_sending");
+            }
+            if (ApiFailureCount > 0 || _apiAuthStatus.State == ApiAuthState.Failed)
+            {
+                return L.T("progress.api_failed");
+            }
+            if (_apiState.Pending > 0)
+            {
+                return L.T("progress.api_waiting");
+            }
+            return HasCompletedApiProgress
+                ? L.T("progress.api_complete")
+                : L.T("progress.api_none");
+        }
+    }
+    public string ApiProgressCountText
+    {
+        get
+        {
+            if ((HasCurrentApiProgress || _apiState.IsSyncing) && _apiProgress?.Total is int total)
+            {
+                return L.F("progress.api_count", L.N(_apiProgress.Succeeded), L.N(total));
+            }
+            if (_apiState.Pending > 0)
+            {
+                return L.F("progress.api_pending", L.N(_apiState.Pending));
+            }
+            if (ApiFailureCount > 0)
+            {
+                return L.F("progress.api_failures", L.N(ApiFailureCount));
+            }
+            return L.T("progress.api_none");
+        }
+    }
+    public string ApiProgressDetailText
+    {
+        get
+        {
+            if (_apiAuthStatus.State == ApiAuthState.Failed)
+            {
+                return L.T("progress.api_unavailable");
+            }
+            var details = new List<string>();
+            if (ApiFailureCount > 0 && (HasCurrentApiProgress || _apiState.Pending > 0))
+            {
+                details.Add(L.F("progress.api_failures", L.N(ApiFailureCount)));
+            }
+            if (_apiState.IsSyncing && !string.IsNullOrWhiteSpace(_apiProgress?.CurrentReplay))
+            {
+                details.Add(L.F("progress.api_current", Path.GetFileName(_apiProgress.CurrentReplay)));
+            }
+            return string.Join(" · ", details);
+        }
+    }
+    public bool ShowApiProgressDetail => ApiProgressDetailText.Length > 0;
+    public bool ShowApiProgressBar => _apiState.IsSyncing || HasCurrentApiProgress;
+    public bool ApiProgressIsIndeterminate => _apiState.IsSyncing && !HasCurrentApiProgress;
+    public double ApiProgressValue => HasCurrentApiProgress && _apiProgress?.Total is int total
+        ? Math.Clamp(_apiProgress.Processed * 100.0 / total, 0, 100)
+        : 0;
+    public string ApiProgressPercentText => HasCurrentApiProgress && _apiProgress?.Total is int total
+        ? FormatPercent(Math.Clamp(_apiProgress.Processed * 100.0 / total, 0, 100))
+        : "";
+    public IBrush ApiProgressAccent => ApiFailureCount > 0 || _apiAuthStatus.State == ApiAuthState.Failed
+        ? Rose
+        : HasCompletedApiProgress ? Green : Cyan;
+
+    private LocalReplayProgress LocalProgress => State?.LocalProgress ?? LocalReplayProgress.Initial;
+    private bool IsLocalPriorityActive => State?.LocalPriorityActive ?? true;
+    private int ApiFailureCount => Math.Max(_apiState.Failed, _apiProgress?.Failed ?? 0);
+    private bool HasCurrentApiProgress => _apiProgress?.Total is > 0
+        && (_apiState.IsSyncing && !IsLocalPriorityActive
+            || !_apiState.IsSyncing && !IsLocalPriorityActive
+                && _apiAuthStatus.State != ApiAuthState.Failed
+                && _apiState.Pending == 0 && _apiProgress.Processed >= _apiProgress.Total);
+    private bool HasCompletedApiProgress => _apiProgress?.Total is > 0
+        && !_apiState.IsSyncing
+        && !IsLocalPriorityActive
+        && _apiAuthStatus.State != ApiAuthState.Failed
+        && _apiState.Pending == 0
+        && _apiProgress.Processed >= _apiProgress.Total;
+    private bool HasLocalProcessingActivity => State != null
+        && (LocalProgress.Phase is LocalReplayPhase.Identifying
+            or LocalReplayPhase.Processing
+            or LocalReplayPhase.Waiting
+            or LocalReplayPhase.Failed
+            || LocalProgress.Failed > 0);
+    private bool HasProcessingActivity => HasLocalProcessingActivity
+        || _apiState.IsSyncing
+        || _apiState.Pending > 0
+        || ApiFailureCount > 0;
+    private bool HasApiWork => _apiState.Pending > 0 || ApiFailureCount > 0 || _apiState.IsSyncing;
+    private bool IsCompactShowingApiProgress => !HasLocalProcessingActivity
+        && (_apiState.IsSyncing || HasCompletedApiProgress);
+
     public ProfileOption? SelectedProfile
     {
         get => _selectedProfile;
@@ -124,8 +464,136 @@ internal sealed partial class DashboardViewModel : ObservableObject, IDisposable
         }
     }
 
-    private void OnMonitorChanged(MonitorState state) =>
-        Dispatcher.UIThread.Post(() => State = state);
+    private void OnMonitorChanged(MonitorState state)
+    {
+        Interlocked.Exchange(ref _pendingState, state);
+        QueueUiRefresh();
+    }
+
+    private void OnApiStateChanged(ApiSyncState state) => QueueUiRefresh();
+    private void OnApiProgressChanged(ApiOperationProgress progress) => QueueUiRefresh();
+    private void OnApiAuthStatusChanged(ApiAuthStatus status) => QueueUiRefresh();
+
+    private void QueueUiRefresh()
+    {
+        if (Interlocked.Exchange(ref _uiRefreshQueued, 1) != 0)
+        {
+            return;
+        }
+        Dispatcher.UIThread.Post(() =>
+        {
+            Interlocked.Exchange(ref _uiRefreshQueued, 0);
+            if (_disposed)
+            {
+                return;
+            }
+            var state = Interlocked.Exchange(ref _pendingState, null);
+            _apiState = _runtime.ApiSync.State;
+            _apiProgress = _runtime.ApiSync.Progress;
+            _apiAuthStatus = _runtime.ApiSync.AuthStatus;
+            if (state != null)
+            {
+                State = state;
+            }
+            else
+            {
+                RefreshProcessingProgress();
+            }
+        });
+    }
+
+    private void RefreshProcessingProgress()
+    {
+        UpdateCompletionVisibility();
+        OnPropertyChanged(nameof(ShowProcessingStatus));
+        OnPropertyChanged(nameof(CompactStatusText));
+        OnPropertyChanged(nameof(CompactProgressText));
+        OnPropertyChanged(nameof(ShowCompactProgressText));
+        OnPropertyChanged(nameof(CompactProgressPercentText));
+        OnPropertyChanged(nameof(ShowCompactProgressPercent));
+        OnPropertyChanged(nameof(CompactProgressValue));
+        OnPropertyChanged(nameof(ShowCompactProgressBar));
+        OnPropertyChanged(nameof(CompactProgressIsIndeterminate));
+        OnPropertyChanged(nameof(CompactProgressAccent));
+        OnPropertyChanged(nameof(CompactSyncText));
+        OnPropertyChanged(nameof(CompactSyncAccent));
+        OnPropertyChanged(nameof(LocalProgressTitle));
+        OnPropertyChanged(nameof(LocalProgressStatus));
+        OnPropertyChanged(nameof(LocalBatchText));
+        OnPropertyChanged(nameof(ShowLocalBatch));
+        OnPropertyChanged(nameof(LocalProgressPercentText));
+        OnPropertyChanged(nameof(LocalProgressValue));
+        OnPropertyChanged(nameof(LocalProgressIsIndeterminate));
+        OnPropertyChanged(nameof(ShowLocalProgressBar));
+        OnPropertyChanged(nameof(LocalProgressCountText));
+        OnPropertyChanged(nameof(ShowLocalProgressCount));
+        OnPropertyChanged(nameof(LocalProgressDetailText));
+        OnPropertyChanged(nameof(ShowLocalProgressDetail));
+        OnPropertyChanged(nameof(LocalProgressAccent));
+        OnPropertyChanged(nameof(ApiProgressTitle));
+        OnPropertyChanged(nameof(ApiProgressStatus));
+        OnPropertyChanged(nameof(ApiProgressCountText));
+        OnPropertyChanged(nameof(ApiProgressDetailText));
+        OnPropertyChanged(nameof(ShowApiProgressDetail));
+        OnPropertyChanged(nameof(ShowApiProgressBar));
+        OnPropertyChanged(nameof(ApiProgressIsIndeterminate));
+        OnPropertyChanged(nameof(ApiProgressValue));
+        OnPropertyChanged(nameof(ApiProgressPercentText));
+        OnPropertyChanged(nameof(ApiProgressAccent));
+    }
+
+    private void UpdateCompletionVisibility()
+    {
+        if (HasProcessingActivity)
+        {
+            _completionTimer.Stop();
+            _showCompletionStatus = false;
+            return;
+        }
+
+        var newCompletion = false;
+        if (!IsLocalPriorityActive
+            && State?.LocalProgress is { Phase: LocalReplayPhase.Completed, Total: > 0 } local
+            && local.BatchNumber > 0
+            && local.Processed >= local.Total
+            && local.Failed == 0
+            && local.BatchNumber != _lastCompletedLocalBatch)
+        {
+            _lastCompletedLocalBatch = local.BatchNumber;
+            newCompletion = true;
+        }
+        if (HasCompletedApiProgress
+            && _apiProgress is { } apiProgress
+            && _lastCompletedApiOperation != apiProgress.StartedAtUtc)
+        {
+            _lastCompletedApiOperation = apiProgress.StartedAtUtc;
+            newCompletion = true;
+        }
+
+        if (newCompletion)
+        {
+            _showCompletionStatus = true;
+            _completionTimer.Stop();
+            _completionTimer.Start();
+        }
+        else if (!_showCompletionStatus)
+        {
+            IsProcessingStatusExpanded = false;
+        }
+    }
+
+    private void OnCompletionTimerTick(object? sender, EventArgs e)
+    {
+        _completionTimer.Stop();
+        _showCompletionStatus = false;
+        if (!HasProcessingActivity)
+        {
+            IsProcessingStatusExpanded = false;
+        }
+        RefreshProcessingProgress();
+    }
+
+    private static string FormatPercent(double value) => value.ToString("0.0", L.Culture) + "%";
 
     private void RefreshMetrics()
     {
@@ -236,6 +704,9 @@ internal sealed partial class DashboardViewModel : ObservableObject, IDisposable
     private void ToggleOverlay() => _runtime.Monitor.ToggleOverlay();
 
     [RelayCommand]
+    private void ToggleProcessingStatus() => IsProcessingStatusExpanded = !IsProcessingStatusExpanded;
+
+    [RelayCommand]
     private void OpenReport()
     {
         try
@@ -257,10 +728,21 @@ internal sealed partial class DashboardViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private void InstallUpdate() => _runtime.Monitor.InstallUpdate();
 
-    public void Dispose() => _runtime.Monitor.Changed -= OnMonitorChanged;
+    public void Dispose()
+    {
+        _disposed = true;
+        _completionTimer.Stop();
+        _completionTimer.Tick -= OnCompletionTimerTick;
+        _runtime.Monitor.Changed -= OnMonitorChanged;
+        _runtime.ApiSync.StateChanged -= OnApiStateChanged;
+        _runtime.ApiSync.ProgressChanged -= OnApiProgressChanged;
+        _runtime.ApiSync.AuthStatusChanged -= OnApiAuthStatusChanged;
+    }
 
     private static class Glyphs
     {
+        public static readonly Geometry ChevronDown = Geometry.Parse("M5 8 L12 15 L19 8");
+        public static readonly Geometry ChevronUp = Geometry.Parse("M5 15 L12 8 L19 15");
         public static readonly Geometry Calendar = Geometry.Parse("M4 4 H20 V21 H4 Z M4 9 H20 M8 2 V6 M16 2 V6 M8 13 H9 M12 13 H13 M16 13 H17 M8 17 H9 M12 17 H13");
         public static readonly Geometry Trophy = Geometry.Parse("M7 4 H17 V11 C17 15 14 17 12 17 C10 17 7 15 7 11 Z M7 6 H3 V9 C3 12 5 13 8 13 M17 6 H21 V9 C21 12 19 13 16 13 M12 17 V20 M8 21 H16 M9 20 H15");
         public static readonly Geometry Controller = Geometry.Parse("M5 8 C7 6 9 6 11 7 H17 C20 7 21 9 21 12 L20 17 C19 20 17 20 15 17 H9 C7 20 5 20 4 17 L3 12 C3 10 4 8 5 8 Z M7 10 V14 M5 12 H9 M16 10 H16.1 M18 13 H18.1");

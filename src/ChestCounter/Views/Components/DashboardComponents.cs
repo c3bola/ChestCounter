@@ -97,6 +97,11 @@ public partial class StatisticsPanel : UserControl
     public StatisticsPanel() => InitializeComponent();
 }
 
+public partial class ProcessingStatusPanel : UserControl
+{
+    public ProcessingStatusPanel() => InitializeComponent();
+}
+
 public partial class TeamPanel : UserControl
 {
     public TeamPanel() => InitializeComponent();

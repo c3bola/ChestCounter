@@ -124,15 +124,38 @@ internal static class Program
         var apiConfigStore = new ApiIntegrationConfigStore(Path.Combine(dataDir, "api-config.json"));
         _ = apiConfigStore.Load();
         var apiSync = new ApiSyncService(apiConfigStore, Path.Combine(dataDir, "api-sync-queue.json"));
-        tracker.MatchPersisted += apiSync.QueueReplay;
+        apiSync.SetLocalProcessing(true);
         apiSync.Start();
-        apiSync.QueueHistorical(data, tracker.ReplayFiles());
 
         var monitorServices = new MonitorServices();
         var monitorDependencies = new MonitorDependencies(
             monitorServices, monitorServices, monitorServices, monitorServices, monitorServices, monitorServices);
         var monitor = new ChestCounter.Monitor(store, config, data, tracker, dataDir,
             new NativeOverlayHost(Path.Combine(dataDir, "overlay.png")), monitorDependencies) { AutoMode = auto };
+        var historicalQueueInitialized = 0;
+        monitor.LocalProcessingChanged += processing =>
+        {
+            if (processing)
+            {
+                apiSync.SetLocalProcessing(true);
+                return;
+            }
+
+            if (Interlocked.CompareExchange(ref historicalQueueInitialized, 1, 0) == 0)
+            {
+                try
+                {
+                    apiSync.QueueHistorical(data, tracker.ReplayFiles());
+                }
+                catch (Exception ex)
+                {
+                    ErrorLog.Write("Queue historical replays after local processing", ex);
+                    Interlocked.Exchange(ref historicalQueueInitialized, 0);
+                }
+            }
+            monitor.ResumeSynchronizationIfLocalWorkIsDrained(() => apiSync.SetLocalProcessing(false));
+        };
+        tracker.MatchPersisted += apiSync.QueueReplay;
         if (reanalyzing)
         {
             monitor.SetNotice(L.T("startup.new_analysis_version_the_replays_are_read_again"));

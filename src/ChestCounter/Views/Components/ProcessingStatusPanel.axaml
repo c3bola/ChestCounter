@@ -1,0 +1,93 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:animation="using:Avalonia.Animation"
+             xmlns:automation="using:Avalonia.Automation"
+             x:Class="ChestCounter.ProcessingStatusPanel">
+  <Border Classes="dashboard-card" Padding="10,8" IsVisible="{Binding ShowProcessingStatus}">
+    <StackPanel Spacing="6">
+      <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="7">
+        <Path Data="M12 2 A10 10 0 1 0 22 12" Stroke="{Binding CompactProgressAccent}"
+              StrokeThickness="2.4" Width="20" Height="20" Stretch="Uniform" VerticalAlignment="Center" />
+        <TextBlock Grid.Column="1" Text="{Binding CompactStatusText}" FontSize="12" FontWeight="SemiBold"
+                   TextWrapping="Wrap" VerticalAlignment="Center" />
+        <Border Grid.Column="2" Background="{StaticResource PanelBackground}" BorderBrush="{Binding CompactSyncAccent}"
+                BorderThickness="1" CornerRadius="14" Padding="8,4" VerticalAlignment="Center">
+          <TextBlock Text="{Binding CompactSyncText}" Foreground="{Binding CompactSyncAccent}" FontSize="10"
+                     TextWrapping="NoWrap" VerticalAlignment="Center" />
+        </Border>
+        <Button Grid.Column="3" Command="{Binding ToggleProcessingStatusCommand}"
+                ToolTip.Tip="{Binding ProcessingStatusToggleLabel}"
+                automation:AutomationProperties.Name="{Binding ProcessingStatusToggleLabel}"
+                Background="{StaticResource PanelBackground}"
+                BorderBrush="{StaticResource CardBorder}" BorderThickness="1" CornerRadius="16"
+                Padding="7" MinWidth="30" MinHeight="30" VerticalAlignment="Center">
+          <Path Data="{Binding ProcessingStatusChevron}" Stroke="{StaticResource SecondaryText}"
+                StrokeThickness="2" Width="12" Height="12" Stretch="Uniform" />
+        </Button>
+      </Grid>
+      <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8" IsVisible="{Binding ShowCompactProgressText}">
+        <TextBlock Text="{Binding CompactProgressText}" Foreground="{StaticResource SecondaryText}" FontSize="11"
+                   TextWrapping="Wrap" VerticalAlignment="Center" />
+        <TextBlock Grid.Column="1" Text="{Binding CompactProgressPercentText}" IsVisible="{Binding ShowCompactProgressPercent}"
+                   Foreground="{Binding CompactProgressAccent}" FontSize="11" FontWeight="Bold"
+                   VerticalAlignment="Center" />
+      </Grid>
+      <ProgressBar Height="4" Minimum="0" Maximum="100" Value="{Binding CompactProgressValue}"
+                   IsIndeterminate="{Binding CompactProgressIsIndeterminate}"
+                   IsVisible="{Binding ShowCompactProgressBar}" Foreground="{Binding CompactProgressAccent}"
+                   Background="{StaticResource PanelBackground}">
+        <ProgressBar.Transitions>
+          <animation:Transitions>
+            <animation:DoubleTransition Property="Value" Duration="0:0:0.22" />
+          </animation:Transitions>
+        </ProgressBar.Transitions>
+      </ProgressBar>
+      <Border MaxHeight="{Binding ProcessingDetailsMaxHeight}" ClipToBounds="True"
+              Opacity="{Binding ProcessingDetailsOpacity}" IsHitTestVisible="{Binding IsProcessingStatusExpanded}">
+        <Border.Transitions>
+          <animation:Transitions>
+            <animation:DoubleTransition Property="MaxHeight" Duration="0:0:0.18" />
+            <animation:DoubleTransition Property="Opacity" Duration="0:0:0.14" />
+          </animation:Transitions>
+        </Border.Transitions>
+        <Grid Margin="0,6,0,2" RowDefinitions="Auto,1,Auto" RowSpacing="9">
+          <StackPanel Spacing="5">
+            <TextBlock Text="{Binding LocalProgressTitle}" Foreground="{Binding LocalProgressAccent}"
+                       FontSize="12" FontWeight="Bold" />
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+              <TextBlock Text="{Binding LocalProgressStatus}" FontSize="11" TextWrapping="Wrap" />
+              <TextBlock Grid.Column="1" Text="{Binding LocalProgressPercentText}" Foreground="{Binding LocalProgressAccent}"
+                         FontSize="11" FontWeight="Bold" />
+            </Grid>
+            <ProgressBar Height="5" Minimum="0" Maximum="100" Value="{Binding LocalProgressValue}"
+                         IsIndeterminate="{Binding LocalProgressIsIndeterminate}"
+                         IsVisible="{Binding ShowLocalProgressBar}" Foreground="{Binding LocalProgressAccent}"
+                         Background="{StaticResource PanelBackground}" />
+            <TextBlock Text="{Binding LocalProgressCountText}" Foreground="{StaticResource SecondaryText}"
+                       FontSize="11" TextWrapping="Wrap" IsVisible="{Binding ShowLocalProgressCount}" />
+            <TextBlock Text="{Binding LocalProgressDetailText}" Foreground="{StaticResource SecondaryText}"
+                       FontSize="11" TextWrapping="Wrap" IsVisible="{Binding ShowLocalProgressDetail}" />
+          </StackPanel>
+          <Border Grid.Row="1" Height="1" Background="{StaticResource CardBorder}" />
+          <StackPanel Grid.Row="2" Spacing="5">
+            <TextBlock Text="{Binding ApiProgressTitle}" Foreground="{Binding ApiProgressAccent}"
+                       FontSize="12" FontWeight="Bold" />
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+              <TextBlock Text="{Binding ApiProgressStatus}" FontSize="11" TextWrapping="Wrap" />
+              <TextBlock Grid.Column="1" Text="{Binding ApiProgressPercentText}" Foreground="{Binding ApiProgressAccent}"
+                         FontSize="11" FontWeight="Bold" />
+            </Grid>
+            <ProgressBar Height="5" Minimum="0" Maximum="100" Value="{Binding ApiProgressValue}"
+                         IsIndeterminate="{Binding ApiProgressIsIndeterminate}"
+                         IsVisible="{Binding ShowApiProgressBar}" Foreground="{Binding ApiProgressAccent}"
+                         Background="{StaticResource PanelBackground}" />
+            <TextBlock Text="{Binding ApiProgressCountText}" Foreground="{StaticResource SecondaryText}"
+                       FontSize="11" TextWrapping="Wrap" />
+            <TextBlock Text="{Binding ApiProgressDetailText}" Foreground="{StaticResource SecondaryText}"
+                       FontSize="11" TextWrapping="Wrap" IsVisible="{Binding ShowApiProgressDetail}" />
+          </StackPanel>
+        </Grid>
+      </Border>
+    </StackPanel>
+  </Border>
+</UserControl>

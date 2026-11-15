@@ -19,6 +19,7 @@
             ColumnSpacing="14" RowSpacing="12" SizeChanged="OnDashboardSizeChanged">
         <StackPanel x:Name="MainPanels" Grid.Column="0" Spacing="10">
           <local:HeroPanel />
+          <local:ProcessingStatusPanel />
           <local:LastMatchPanel />
           <local:WeeklyChart />
         </StackPanel>
