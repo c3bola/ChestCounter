@@ -28,10 +28,6 @@ public sealed class ApiAuthException : Exception
 /// </summary>
 public sealed class ApiAuthService
 {
-    /// <summary>
-    /// POST /auth/mock is absent from reference/openapi.yaml but was confirmed against the production
-    /// API by the project owner. It needs no Authorization header and returns {success, token, user}.
-    /// </summary>
     public const bool MockEndpointAuthorizedForProduction = true;
 
     public const string MockEndpoint = "auth/mock";
@@ -197,12 +193,12 @@ public sealed class ApiAuthService
             Fail(ex.Message);
             throw;
         }
-        catch (Exception ex) when (ex is HttpRequestException or JsonException or FormatException
+        catch (Exception ex) when (ex is HttpRequestException or IOException or JsonException or FormatException
             or OperationCanceledException && !cancellationToken.IsCancellationRequested)
         {
             var message = ex is OperationCanceledException
                 ? "The authorization request timed out."
-                : ex is HttpRequestException
+                : ex is HttpRequestException or IOException
                     ? "Could not reach the API to obtain authorization."
                     : "The authorization response was not valid.";
             Fail(message);

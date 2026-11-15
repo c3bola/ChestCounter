@@ -7,6 +7,7 @@ public sealed class ApiIntegrationConfig
 {
     public bool Enabled { get; set; } = true;
     public string BaseUrl { get; set; } = ApiIntegrationConfigStore.DefaultBaseUrl;
+    public string ApplicationId { get; set; } = ReplayIngestionMapper.DefaultApplicationId;
 }
 
 public sealed class ApiIntegrationConfigStore
@@ -58,6 +59,10 @@ public sealed class ApiIntegrationConfigStore
                 if (!TryNormalizeBaseUrl(config.BaseUrl, out var normalized))
                 {
                     throw new InvalidDataException("The API base URL must be an absolute HTTP or HTTPS URL.");
+                }
+                if (string.IsNullOrWhiteSpace(config.ApplicationId) || config.ApplicationId.Length > 150)
+                {
+                    throw new InvalidDataException("The API application ID must contain between 1 and 150 characters.");
                 }
 
                 config.BaseUrl = normalized;

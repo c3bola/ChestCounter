@@ -85,6 +85,7 @@ public sealed class ApiSyncServiceTests
                     SessionId = "historic-session",
                     ReplayFile = "historic.replay",
                     ReplayFileSha256 = new string('a', 64),
+                    RawReplayData = CreateRawSnapshot(),
                 },
             ],
         };
@@ -120,6 +121,7 @@ public sealed class ApiSyncServiceTests
                 new TreasureFind { PrizeId = "Prize:Known", ObtainedAtSeconds = 20, FromGoldenChest = true },
                 new TreasureFind { Item = "unknown-without-prize-id" },
             ],
+            RawReplayData = CreateRawSnapshot(),
         };
 
         var mapped = ReplayIngestionMapper.Create(match, replay, hash, "3.2.0", "1.0.0");
@@ -127,12 +129,8 @@ public sealed class ApiSyncServiceTests
 
         Assert.Equal(hash, mapped.ReplayFile.FileSha256);
         Assert.Equal(mapped.Request.IdempotencyKey, repeated.Request.IdempotencyKey);
-        Assert.Equal("session-123", mapped.Request.Match.MatchKey);
-        Assert.Equal("0123456789abcdef0123456789abcdef", mapped.Request.MatchPlayers[0].EpicId);
-        Assert.Single(mapped.Request.Containers);
-        Assert.Equal("destroyed", mapped.Request.Containers[0].Interactions[0].InteractionType);
-        Assert.Single(mapped.Request.Rewards);
-        Assert.Equal("Prize:Known", mapped.Request.Rewards[0].PrizeId);
+        Assert.Equal("chestcounter", mapped.Request.ApplicationId);
+        Assert.Same(match.RawReplayData, mapped.Request.Data);
     }
 
     // ---- Authentication service ----
@@ -303,12 +301,14 @@ public sealed class ApiSyncServiceTests
             Assert.Equal(1, handler.AuthCalls);
             Assert.Null(handler.LastAuthAuthorization);
             Assert.Equal(ApiAuthState.Authenticated, service.AuthStatus.State);
-            Assert.Equal(2, requests.Count);
-            Assert.EndsWith("/api/v1/replay-files", requests[0].Path);
-            Assert.EndsWith("/processing-attempts", requests[1].Path);
+            Assert.Single(requests);
+            Assert.EndsWith("/processing-attempts", requests[0].Path);
             Assert.All(requests, request => Assert.Equal("Bearer " + TestJwt, request.Authorization));
-            Assert.Contains("\"fileSha256\"", requests[0].Body);
-            Assert.Contains("\"idempotencyKey\"", requests[1].Body);
+            using var requestBody = JsonDocument.Parse(requests[0].Body);
+            Assert.Equal("chestcounter", requestBody.RootElement.GetProperty("application_id").GetString());
+            Assert.False(string.IsNullOrEmpty(requestBody.RootElement.GetProperty("idempotency_key").GetString()));
+            Assert.Equal(JsonValueKind.Object, requestBody.RootElement.GetProperty("analyzer_version").ValueKind);
+            Assert.Equal("EventsOnly", requestBody.RootElement.GetProperty("data").GetProperty("parseMode").GetString());
             Assert.Contains(progressUpdates, progress => progress.Total == 1 && progress.Processed == 1 && progress.Succeeded == 1);
         }
 
@@ -385,7 +385,7 @@ public sealed class ApiSyncServiceTests
         Assert.Null(handler.LastAuthAuthorization);
         lock (authorizations)
         {
-            Assert.Equal(2, authorizations.Count);
+            Assert.Single(authorizations);
             Assert.All(authorizations, header => Assert.Equal("Bearer " + TestJwt, header));
         }
     }
@@ -464,7 +464,7 @@ public sealed class ApiSyncServiceTests
         Assert.Equal(0, summary.Pending);
         Assert.Equal(0, summary.Failed);
         Assert.Equal(2, handler.AuthCalls);
-        Assert.Equal(new[] { TestJwt, secondJwt, secondJwt }, seen);
+        Assert.Equal(new[] { TestJwt, secondJwt }, seen);
     }
 
     [Fact]
@@ -559,7 +559,7 @@ public sealed class ApiSyncServiceTests
 
         Assert.Contains("HTTP 200", result);
         Assert.Equal(HttpMethod.Get, method);
-        Assert.EndsWith("/api/v1/replay-files?sha256=" + new string('0', 64), pathAndQuery);
+        Assert.EndsWith("/api/v1/replay-files?page=1&page_size=1", pathAndQuery);
         var log = File.ReadAllText(Path.Combine(folder.Path, "api-sync.log"));
         Assert.DoesNotContain(TestJwt, log);
         Assert.DoesNotContain("response-secret", log);
@@ -731,8 +731,8 @@ public sealed class ApiSyncServiceTests
         using var first = JsonDocument.Parse(bodies[0]);
         using var second = JsonDocument.Parse(bodies[1]);
         Assert.NotEqual(
-            first.RootElement.GetProperty("idempotencyKey").GetString(),
-            second.RootElement.GetProperty("idempotencyKey").GetString());
+            first.RootElement.GetProperty("idempotency_key").GetString(),
+            second.RootElement.GetProperty("idempotency_key").GetString());
     }
 
     // ---- Helpers ----
@@ -778,7 +778,13 @@ public sealed class ApiSyncServiceTests
         PlayerName = "Player",
         IsReplayOwner = true,
         MatchStartUtc = DateTime.UtcNow,
+        RawReplayData = CreateRawSnapshot(),
     };
+
+    private static ReplayRawData CreateRawSnapshot() =>
+        JsonSerializer.Deserialize<ReplayRawData>(
+            """{"parseMode":"EventsOnly","match":null,"players":null,"teams":[],"eventEliminations":[],"killFeed":[],"map":null,"weapons":null,"observations":null}""",
+            new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
 
     private sealed record CapturedRequest(HttpMethod Method, string Path, string? Authorization, string Body);
 

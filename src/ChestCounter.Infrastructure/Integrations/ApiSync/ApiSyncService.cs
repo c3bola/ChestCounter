@@ -83,6 +83,15 @@ public sealed class ApiSyncService : IDisposable
                 item.NextAttemptUtc = DateTimeOffset.UtcNow;
                 recovered = true;
             }
+            foreach (var item in _queue.Where(item =>
+                         item.Request?.Data == null
+                         && (item.State is "pending" or "failed")))
+            {
+                item.State = "blocked";
+                item.NextAttemptUtc = null;
+                item.LastError = "This queued entry uses the legacy API payload and must be re-analyzed before it can be sent.";
+                recovered = true;
+            }
             if (recovered)
             {
                 SaveQueue();
@@ -116,7 +125,7 @@ public sealed class ApiSyncService : IDisposable
                 return new ApiSyncState(
                     _isSyncing,
                     _queue.Count(item => item.State is "pending" or "processing"),
-                    _queue.Count(item => item.State == "failed"),
+                    _queue.Count(item => item.State is "failed" or "blocked"),
                     _status,
                     _queue.Where(item => item.State == "synchronized")
                         .Select(item => item.CompletedAtUtc)
@@ -195,8 +204,15 @@ public sealed class ApiSyncService : IDisposable
 
         var snapshots = new List<ReplayIngestionSnapshot>();
         var filesToHash = new List<(MatchRecord Match, FileInfo File)>();
+        var matchesWithoutSnapshots = 0;
         foreach (var match in data.Matches)
         {
+            if (match.RawReplayData == null)
+            {
+                matchesWithoutSnapshots++;
+                continue;
+            }
+
             latestFileBySession.TryGetValue(match.SessionId, out var file);
             if (match.ReplayFileSha256 is { Length: 64 })
             {
@@ -235,6 +251,12 @@ public sealed class ApiSyncService : IDisposable
         if (filesToHash.Count > 0)
         {
             _ = QueueHistoricalFilesSafelyAsync(filesToHash);
+        }
+        if (matchesWithoutSnapshots > 0)
+        {
+            var message = $"{matchesWithoutSnapshots} saved match(es) do not contain parser snapshots and were not queued. Re-analyze their Replay files to send them.";
+            ReportDiagnostic(ApiDiagnosticSeverity.Warning, message);
+            SetStatus(message);
         }
     }
 
@@ -408,7 +430,7 @@ public sealed class ApiSyncService : IDisposable
 
         try
         {
-            var endpoint = "replay-files?sha256=" + new string('0', 64);
+            var endpoint = "replay-files?page=1&page_size=1";
             UpdateProgress("Connecting to API", "Sending a documented, authenticated, read-only request.");
             using var response = await SendAuthorizedAsync(
                 HttpMethod.Get, config, endpoint, null, replay: null, cancellationToken).ConfigureAwait(false);
@@ -506,7 +528,8 @@ public sealed class ApiSyncService : IDisposable
             replayFile.Length,
             fileCreatedAt,
             AppInfo.VersionText,
-            parserVersion);
+            parserVersion,
+            GetApplicationId());
 
         AddToQueue(snapshot);
     }
@@ -546,7 +569,18 @@ public sealed class ApiSyncService : IDisposable
             fileSizeBytes,
             fileCreatedAt,
             AppInfo.VersionText,
-            parserVersion);
+            parserVersion,
+            GetApplicationId());
+    }
+
+    private string GetApplicationId()
+    {
+        var config = _configStore.Load();
+        if (_configStore.LoadError is { } error)
+        {
+            throw new InvalidDataException("The API configuration file is invalid: " + error);
+        }
+        return config.ApplicationId;
     }
 
     private void AddToQueue(ReplayIngestionSnapshot snapshot) => AddToQueue([snapshot]);
@@ -567,7 +601,7 @@ public sealed class ApiSyncService : IDisposable
                 var hash = snapshot.ReplayFile.FileSha256;
                 if (_queue.Any(item =>
                         item.ReplayFile.FileSha256 == hash
-                        && item.Request.IdempotencyKey == snapshot.Request.IdempotencyKey))
+                        && item.Request?.IdempotencyKey == snapshot.Request.IdempotencyKey))
                 {
                     continue;
                 }
@@ -762,9 +796,7 @@ public sealed class ApiSyncService : IDisposable
 
         try
         {
-            UpdateProgress("Registering replay file", $"Registering {entry.ReplayFile.FileName}.", entry.ReplayFile.FileName);
-            await RegisterReplayFileAsync(entry, config, cancellationToken).ConfigureAwait(false);
-            UpdateProgress("Sending ingestion data", $"Sending extracted match data for {entry.ReplayFile.FileName}.", entry.ReplayFile.FileName);
+            UpdateProgress("Sending parser snapshot", $"Sending parser data for {entry.ReplayFile.FileName}.", entry.ReplayFile.FileName);
             await IngestReplayAsync(entry, config, cancellationToken).ConfigureAwait(false);
             lock (_queueGate)
             {
@@ -840,36 +872,6 @@ public sealed class ApiSyncService : IDisposable
         }
     }
 
-    private async Task RegisterReplayFileAsync(QueueEntry entry, ApiIntegrationConfig config, CancellationToken cancellationToken)
-    {
-        var endpoint = "replay-files";
-        using var response = await SendAuthorizedAsync(
-            HttpMethod.Post, config, endpoint, entry.ReplayFile, entry, cancellationToken).ConfigureAwait(false);
-        if (response.StatusCode is HttpStatusCode.OK or HttpStatusCode.Created)
-        {
-            return;
-        }
-
-        if (response.StatusCode == HttpStatusCode.Conflict)
-        {
-            await VerifyReplayFileExistsAsync(entry, config, cancellationToken).ConfigureAwait(false);
-            return;
-        }
-
-        throw CreateRequestException(response, endpoint);
-    }
-
-    private async Task VerifyReplayFileExistsAsync(QueueEntry entry, ApiIntegrationConfig config, CancellationToken cancellationToken)
-    {
-        var endpoint = $"replay-files/{entry.ReplayFile.FileSha256}";
-        using var response = await SendAuthorizedAsync(
-            HttpMethod.Get, config, endpoint, null, entry, cancellationToken).ConfigureAwait(false);
-        if (response.StatusCode != HttpStatusCode.OK)
-        {
-            throw CreateRequestException(response, endpoint);
-        }
-    }
-
     private async Task IngestReplayAsync(QueueEntry entry, ApiIntegrationConfig config, CancellationToken cancellationToken)
     {
         var endpoint = $"replay-files/{entry.ReplayFile.FileSha256}/processing-attempts";
@@ -889,9 +891,6 @@ public sealed class ApiSyncService : IDisposable
         QueueEntry? replay,
         CancellationToken cancellationToken)
     {
-        var requestBody = request.Content == null
-            ? null
-            : RedactSensitiveText(await request.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false));
         var replayFileName = replay?.ReplayFile.FileName;
         var replaySha256 = replay?.ReplayFile.FileSha256;
         ReportDiagnostic(
@@ -900,8 +899,7 @@ public sealed class ApiSyncService : IDisposable
             request.Method.Method,
             endpoint,
             replayFileName,
-            replaySha256,
-            requestBody);
+            replaySha256);
 
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         HttpResponseMessage response;
@@ -922,7 +920,6 @@ public sealed class ApiSyncService : IDisposable
                 endpoint,
                 replayFileName,
                 replaySha256,
-                requestBody,
                 errorDetails: ex.ToString(),
                 retryable: true,
                 duration: stopwatch.Elapsed);
@@ -932,12 +929,9 @@ public sealed class ApiSyncService : IDisposable
         string? responseBody;
         try
         {
-            if (endpoint == ApiAuthService.MockEndpoint && response.IsSuccessStatusCode)
-            {
-                // The auth service reads this body after the diagnostic preview; keep it replayable.
-                await response.Content.LoadIntoBufferAsync(cancellationToken).ConfigureAwait(false);
-            }
-            responseBody = await ReadResponseSummaryAsync(response.Content, cancellationToken).ConfigureAwait(false);
+            responseBody = endpoint == ApiAuthService.MockEndpoint
+                ? "[Authentication response omitted.]"
+                : await ReadResponseSummaryAsync(response.Content, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is HttpRequestException or IOException or InvalidOperationException or OperationCanceledException)
         {
@@ -950,8 +944,7 @@ public sealed class ApiSyncService : IDisposable
                 endpoint,
                 replayFileName,
                 replaySha256,
-                requestBody,
-                (int)response.StatusCode,
+                httpStatusCode: (int)response.StatusCode,
                 errorDetails: ex.ToString(),
                 retryable: true,
                 duration: stopwatch.Elapsed);
@@ -970,9 +963,8 @@ public sealed class ApiSyncService : IDisposable
             endpoint,
             replayFileName,
             replaySha256,
-            requestBody,
-            (int)response.StatusCode,
-            RedactSensitiveText(responseBody),
+            httpStatusCode: (int)response.StatusCode,
+            responseSummary: RedactSensitiveText(responseBody),
             retryable: isRetryable,
             duration: stopwatch.Elapsed);
         return response;
@@ -1311,13 +1303,18 @@ public sealed class ApiSyncService : IDisposable
                 request.Content = JsonContent.Create(body, body.GetType(), options: Json);
             }
             var response = await SendRequestAsync(request, endpoint, replay, cancellationToken).ConfigureAwait(false);
-            if (response.StatusCode != HttpStatusCode.Unauthorized || attempt > 0)
+            if (response.StatusCode != HttpStatusCode.Unauthorized)
+            {
+                return response;
+            }
+
+            _auth.Invalidate(token);
+            if (attempt > 0)
             {
                 return response;
             }
 
             response.Dispose();
-            _auth.Invalidate(token);
             ReportDiagnostic(ApiDiagnosticSeverity.Warning, "The API rejected the token (HTTP 401); requesting a new one.", method.Method, endpoint, httpStatusCode: 401, retryable: true);
         }
     }
@@ -1358,7 +1355,7 @@ public sealed class ApiSyncService : IDisposable
     private QueueEntry? FindEntry(string fileSha256, string idempotencyKey) =>
         _queue.FirstOrDefault(item =>
             item.ReplayFile.FileSha256 == fileSha256
-            && item.Request.IdempotencyKey == idempotencyKey);
+            && item.Request?.IdempotencyKey == idempotencyKey);
 
     private int CountByState(string state)
     {
