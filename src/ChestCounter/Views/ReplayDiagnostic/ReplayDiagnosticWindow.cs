@@ -218,19 +218,18 @@ internal sealed class ReplayDiagnosticWindow : Window
             {
                 var match = _transcodedMatch
                     ?? throw new InvalidOperationException("Transcodifique o replay antes de preparar o pré-envio.");
-                var prepared = ReplayDiagnosticPreSendService.Prepare(match, RequireSelectedFile());
+                var prepared = ReplayDiagnosticPreSendService.Prepare(
+                    match,
+                    RequireSelectedFile(),
+                    _runtime.ApiSync.Configuration.ApplicationId);
                 _preparedData = prepared;
                 return Task.FromResult(
                     prepared.DisplayJson
                     + Environment.NewLine
                     + Environment.NewLine
-                    + "Campos obrigatórios do cadastro: fileSha256, fileName."
+                    + "Required OpenAPI fields: application_id, idempotency_key, analyzer_version, data."
                     + Environment.NewLine
-                    + "Campos opcionais do cadastro: fileSizeBytes, fileCreatedAt."
-                    + Environment.NewLine
-                    + "Campos obrigatórios do processamento: idempotencyKey, analyzerVersion, match, matchPlayers, containers, rewards."
-                    + Environment.NewLine
-                    + "Campos opcionais aninhados com valor null são omitidos, conforme as opções JSON do sincronizador.");
+                    + "The Replay SHA-256 is sent in the URL. Development mock authentication must be explicitly enabled.");
             },
             () => _preSendCompleted = true);
 

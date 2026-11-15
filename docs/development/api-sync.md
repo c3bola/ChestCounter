@@ -25,7 +25,7 @@ The file never contains a token. A `bearerToken` entry left by an earlier versio
 
 The app requests the token with `POST {BaseUrl}auth/mock` (path in `ApiAuthService.MockEndpoint`), without an `Authorization` header, and expects `{"success": true, "token": "<jwt>", "user": {...}}`. `success: false`, a missing token, invalid JSON, HTTP errors, connection failures and timeouts are reported as authentication failures.
 
-The route is absent from `reference/openapi.yaml` (v1.2.0), but the project owner confirmed it against the production API. The contract should still be updated to document it and the JWT lifetime (`exp`). Setting `ApiAuthService.MockEndpointAuthorizedForProduction` to `false` disables automatic authorization again.
+The route is absent from `reference/openapi.yaml` (v1.2.0). In the API source it is available only when `NODE_ENV=development`; the client cannot obtain a token from that route in a production deployment of that source. Setting `ApiAuthService.MockEndpointAuthorizedForProduction` to `false` disables automatic authorization.
 
 For successful `POST /auth/mock` responses, `ApiSyncService` buffers the response content before reading its diagnostic preview. `ApiAuthService` then reads the same cached content to extract the token; this avoids consuming a one-shot HTTP response stream twice.
 
@@ -33,13 +33,13 @@ For successful `POST /auth/mock` responses, `ApiSyncService` buffers the respons
 
 Public (`security: []`, no token sent): `POST /auth/telegram`, `POST /auth/{provider}`, and the token request itself, which is sent without an `Authorization` header. The app does not call the first two.
 
-Protected (global `bearerAuth`; the app sends the Bearer token): `GET /replay-files` (connection test), `POST /replay-files`, `GET /replay-files/{sha256}`, `POST /replay-files/{sha256}/processing-attempts`.
+Protected (global `bearerAuth`; the app sends the same Bearer token): `GET /replay-files` (connection test) and `POST /replay-files/{sha256}/processing-attempts`.
 
 ## Queue and retries
 
 Replay analysis and the JSON history remain local-first. After `data.json` is saved, the replay's original SHA-256, an idempotent ingestion request, and its retry state are persisted in `api-sync-queue.json`. Pending operations resume in the background on the next launch. Transient network errors, HTTP 408, 429, 5xx, and in-progress HTTP 202 responses are retried with backoff; permanent rejections remain available for a manual retry.
 
-The current ingestion mapper still sends only its existing fields: match identity and metadata, the tracked participant and known teammates, observed containers/interactions, and rewards with an original prize ID. The analyzer now retains an API-independent raw replay snapshot locally (`MatchRecord.RawReplayData`) with participants, teams, elimination sources, map data, observed items/equipment, vehicle references, and event timestamps. Movement and POI grid data require `ParseMode.Full`; inventory contents and independently replicated vehicle positions are not currently exposed by the reader. The raw snapshot is deliberately not included in ingestion until `reference/openapi.yaml` is available and its contract has been reviewed. The connection test uses the documented authenticated `GET /replay-files` endpoint because the OpenAPI contract has no health-check endpoint.
+The ingestion mapper sends `application_id`, `idempotency_key`, `analyzer_version`, and the retained parser snapshot in `data`. Movement and POI grid data require `ParseMode.Full`; inventory contents and independently replicated vehicle positions are not currently exposed by the reader. Parser/schema differences remain documented in the README. The connection test uses the authenticated `GET /replay-files` endpoint.
 
 The Settings actions open an operation monitor that reports configuration and queue validation, authorization, current replay, progress, and each actual HTTP request/response. Selecting a log entry shows its method, endpoint, sanitized request body, HTTP status, response summary, duration, and retryability. Closing the monitor does not cancel the operation. Diagnostic metadata is appended to `api-sync.log`, rotated at 1 MiB with three retained archives; request and response bodies and authentication headers are not written to this file, and token-like values are redacted from the monitor.
 

@@ -275,7 +275,7 @@ internal static class ReplayDiagnosticPreSendService
         WriteIndented = true,
     };
 
-    public static ReplayDiagnosticPreparedData Prepare(MatchRecord match, FileInfo replayFile)
+    public static ReplayDiagnosticPreparedData Prepare(MatchRecord match, FileInfo replayFile, string applicationId)
     {
         var hash = match.ReplayFileSha256
             ?? throw new InvalidDataException("A transcodificação não produziu o SHA-256 do arquivo.");
@@ -285,14 +285,11 @@ internal static class ReplayDiagnosticPreSendService
             replayFile,
             hash,
             AppInfo.VersionText,
-            parserVersion);
+            parserVersion,
+            applicationId);
 
-        var registrationJson = JsonSerializer.Serialize(snapshot.ReplayFile, Json);
         var requestJson = JsonSerializer.Serialize(snapshot.Request, Json);
         var displayJson = new StringBuilder()
-            .AppendLine("POST replay-files — cadastro do arquivo")
-            .AppendLine(registrationJson)
-            .AppendLine()
             .AppendLine($"POST replay-files/{snapshot.ReplayFile.FileSha256}/processing-attempts — dados transcodificados")
             .Append(requestJson)
             .ToString();
@@ -436,29 +433,23 @@ internal sealed class ReplayDiagnosticApiSender
         ReplayIngestionSnapshot snapshot,
         IReadOnlyList<ReplayDiagnosticHttpRequest> requests)
     {
-        var fileRegistrationBody = requests
-            .LastOrDefault(request => Uri.TryCreate(request.Url, UriKind.Absolute, out var uri)
-                && uri.AbsolutePath.EndsWith("/replay-files", StringComparison.Ordinal)
-                && request.Body != null)
-            ?.Body;
         var ingestionBody = requests
             .LastOrDefault(request => Uri.TryCreate(request.Url, UriKind.Absolute, out var uri)
                 && uri.AbsolutePath.EndsWith("/processing-attempts", StringComparison.Ordinal)
                 && request.Body != null)
             ?.Body;
-        var expectedRegistrationBody = JsonSerializer.Serialize(snapshot.ReplayFile, RequestJsonOptions);
         var expectedIngestionBody = JsonSerializer.Serialize(snapshot.Request, RequestJsonOptions);
 
-        if (fileRegistrationBody == null || ingestionBody == null)
+        if (ingestionBody == null)
         {
-            return "Não foi possível comparar os dois corpos HTTP; consulte o status e os logs da operação.";
+            return "Não foi possível comparar o corpo HTTP de ingestão; consulte o status e os logs da operação.";
         }
-        if (fileRegistrationBody != expectedRegistrationBody || ingestionBody != expectedIngestionBody)
+        if (ingestionBody != expectedIngestionBody)
         {
             return "ATENÇÃO: o corpo capturado pelo cliente HTTP difere do JSON preparado.";
         }
 
-        return "Os corpos capturados pelo cliente HTTP correspondem exatamente aos JSONs preparados.";
+        return "O corpo capturado pelo cliente HTTP corresponde exatamente ao JSON preparado.";
     }
 
     private sealed class ExceptionCapturingHandler(
