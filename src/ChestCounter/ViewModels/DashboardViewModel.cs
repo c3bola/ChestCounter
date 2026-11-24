@@ -1,5 +1,6 @@
-using System.Diagnostics;
 using System.Threading;
+using System.ComponentModel;
+using System.Security;
 using Avalonia.Media;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -15,9 +16,13 @@ internal sealed partial class DashboardViewModel : ObservableObject, IDisposable
     private static readonly IBrush Cyan = new SolidColorBrush(Color.Parse("#00C8F5"));
     private static readonly IBrush Amber = new SolidColorBrush(Color.Parse("#FFB84D"));
     private static readonly IBrush Rose = new SolidColorBrush(Color.Parse("#FF6B7A"));
+    private static readonly TimeSpan RemoteIdentityRefreshInterval = TimeSpan.FromDays(1);
 
     private readonly RuntimeContext _runtime;
+    private readonly Action<string> _openExternalLink;
     private readonly DispatcherTimer _completionTimer;
+    private readonly DispatcherTimer _remoteProfileRetryTimer;
+    private readonly Dictionary<string, DateTimeOffset> _remoteProfileRetryAfter = new(StringComparer.OrdinalIgnoreCase);
     private MonitorState? _state;
     private ApiSyncState _apiState;
     private ApiOperationProgress? _apiProgress;
@@ -31,15 +36,25 @@ internal sealed partial class DashboardViewModel : ObservableObject, IDisposable
     private bool _disposed;
     private ProfileOption? _selectedProfile;
     private bool _syncingProfile;
+    private string? _remoteProfileIdentityKey;
+    private long? _remoteProfilePlayerId;
+    private bool _remoteProfileResolving;
+    private CancellationTokenSource? _remoteProfileCancellation;
+    private Task? _remoteProfileResolutionTask;
+    private bool _startupProfileOpenPending;
 
-    public DashboardViewModel(RuntimeContext runtime)
+    public DashboardViewModel(RuntimeContext runtime, Action<string>? openExternalLink = null)
     {
         _runtime = runtime;
+        _openExternalLink = openExternalLink ?? ExternalLinkLauncher.Open;
         _apiState = runtime.ApiSync.State;
         _apiProgress = runtime.ApiSync.Progress;
         _apiAuthStatus = runtime.ApiSync.AuthStatus;
+        _startupProfileOpenPending = runtime.Monitor.Config.OpenReportOnStart && !runtime.Monitor.AutoMode;
         _completionTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
         _completionTimer.Tick += OnCompletionTimerTick;
+        _remoteProfileRetryTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(1) };
+        _remoteProfileRetryTimer.Tick += OnRemoteProfileRetryTimerTick;
         runtime.Monitor.Changed += OnMonitorChanged;
         runtime.ApiSync.StateChanged += OnApiStateChanged;
         runtime.ApiSync.ProgressChanged += OnApiProgressChanged;
@@ -65,8 +80,10 @@ internal sealed partial class DashboardViewModel : ObservableObject, IDisposable
     public string CloseCaption => L.T("settings.close");
     public string ProfileCaption => L.T("main.profile") + ":";
     public string OverlayButtonText => L.T("main.overlay");
-    public string ReportButtonText => L.T("main.report");
+    public string ReportButtonText => L.T("main.open_online_report");
     public string SettingsButtonText => L.T("main.settings");
+    public string RemoteProfileStatus => L.T("main.remote_profile_resolving");
+    public bool ShowRemoteProfileStatus => _remoteProfileResolving;
     public string KeepOpenText => L.T("main.keep_open");
     public string InstallText => L.F("main.install_version_you_have", State?.Update?.Version.ToString(3) ?? "", AppInfo.VersionText);
 
@@ -101,6 +118,7 @@ internal sealed partial class DashboardViewModel : ObservableObject, IDisposable
                 RefreshProfiles();
                 RefreshTeam();
                 UpdateLastMatch();
+                _ = ResolveRemoteProfileAsync();
             }
         }
     }
@@ -707,15 +725,227 @@ internal sealed partial class DashboardViewModel : ObservableObject, IDisposable
     private void ToggleProcessingStatus() => IsProcessingStatusExpanded = !IsProcessingStatusExpanded;
 
     [RelayCommand]
-    private void OpenReport()
+    private async Task OpenReport()
+    {
+        await ResolveRemoteProfileAsync();
+        if (_remoteProfilePlayerId is not { } playerId)
+        {
+            OpenExternalUrl(RemoteProfileUrl.PlayersUrl);
+            return;
+        }
+
+        OpenRemoteProfile(playerId);
+    }
+
+    private async Task ResolveRemoteProfileAsync()
+    {
+        var state = State;
+        var identityKey = ProfileIdentityKey(state);
+        if (identityKey == null)
+        {
+            _remoteProfileCancellation?.Cancel();
+            _remoteProfileIdentityKey = null;
+            _remoteProfilePlayerId = null;
+            _remoteProfileResolving = false;
+            _remoteProfileRetryTimer.Stop();
+            OnPropertyChanged(nameof(RemoteProfileStatus));
+            OnPropertyChanged(nameof(ShowRemoteProfileStatus));
+            return;
+        }
+
+        if (_remoteProfileIdentityKey != identityKey)
+        {
+            _remoteProfileCancellation?.Cancel();
+            _remoteProfileIdentityKey = identityKey;
+            _remoteProfilePlayerId = null;
+            _remoteProfileResolving = false;
+        }
+
+        var savedIdentity = _runtime.Monitor.GetFortCardsPlayerIdentity(identityKey);
+        if (savedIdentity?.PlayerId > 0)
+        {
+            _remoteProfilePlayerId = savedIdentity.PlayerId;
+            OpenStartupProfileIfRequested(savedIdentity.PlayerId);
+            if (savedIdentity.LastResolvedAtUtc > DateTimeOffset.UtcNow - RemoteIdentityRefreshInterval)
+            {
+                _remoteProfileResolving = false;
+                _remoteProfileRetryTimer.Stop();
+            }
+            else if (_remoteProfileResolutionTask != null && _remoteProfileResolving)
+            {
+                _remoteProfileRetryTimer.Stop();
+            }
+            else if (_remoteProfileRetryAfter.TryGetValue(identityKey, out var savedRetryAt)
+                && savedRetryAt > DateTimeOffset.UtcNow)
+            {
+                _remoteProfileResolving = false;
+                _remoteProfileRetryTimer.Start();
+            }
+            else
+            {
+                _ = StartRemoteProfileResolution(identityKey, state, hasCachedIdentity: true);
+            }
+            OnPropertyChanged(nameof(RemoteProfileStatus));
+            OnPropertyChanged(nameof(ShowRemoteProfileStatus));
+            return;
+        }
+
+        if (_remoteProfileResolutionTask != null && _remoteProfileResolving)
+        {
+            await _remoteProfileResolutionTask;
+            return;
+        }
+
+        if (_remoteProfileRetryAfter.TryGetValue(identityKey, out var retryAt)
+            && retryAt > DateTimeOffset.UtcNow)
+        {
+            OnPropertyChanged(nameof(RemoteProfileStatus));
+            OnPropertyChanged(nameof(ShowRemoteProfileStatus));
+            return;
+        }
+
+        await StartRemoteProfileResolution(identityKey, state, hasCachedIdentity: false);
+    }
+
+    private Task StartRemoteProfileResolution(string identityKey, MonitorState? state, bool hasCachedIdentity)
+    {
+        _remoteProfileCancellation?.Dispose();
+        _remoteProfileCancellation = new CancellationTokenSource();
+        var cancellationToken = _remoteProfileCancellation.Token;
+        _remoteProfileResolving = true;
+        OnPropertyChanged(nameof(RemoteProfileStatus));
+        OnPropertyChanged(nameof(ShowRemoteProfileStatus));
+
+        var task = ResolveAndStoreRemoteProfileAsync(
+            identityKey,
+            state?.CurrentEpicId,
+            state?.CurrentPlayerName,
+            hasCachedIdentity,
+            cancellationToken);
+        _remoteProfileResolutionTask = task;
+        return task;
+    }
+
+    private async Task ResolveAndStoreRemoteProfileAsync(
+        string identityKey,
+        string? epicId,
+        string? playerName,
+        bool hasCachedIdentity,
+        CancellationToken cancellationToken)
     {
         try
         {
-            Process.Start(new ProcessStartInfo(_runtime.Store.ReportPath) { UseShellExecute = true })?.Dispose();
+            var resolution = await _runtime.ApiSync.ResolveFortCardsPlayerAsync(epicId, playerName, cancellationToken);
+            if (resolution.Status == FortCardsPlayerResolutionStatus.Found && resolution.PlayerId is > 0)
+            {
+                _runtime.Monitor.SetFortCardsPlayerIdentity(identityKey, resolution.PlayerId.Value);
+            }
+            if (_remoteProfileIdentityKey != identityKey)
+            {
+                return;
+            }
+
+            _remoteProfileResolving = false;
+            if (resolution.Status == FortCardsPlayerResolutionStatus.Found && resolution.PlayerId is > 0)
+            {
+                _remoteProfilePlayerId = resolution.PlayerId;
+                _remoteProfileRetryAfter.Remove(identityKey);
+                _remoteProfileRetryTimer.Stop();
+                OpenStartupProfileIfRequested(resolution.PlayerId.Value);
+            }
+            else
+            {
+                if (!hasCachedIdentity)
+                {
+                    _remoteProfilePlayerId = null;
+                }
+                _remoteProfileRetryAfter[identityKey] = DateTimeOffset.UtcNow.AddMinutes(1);
+                _remoteProfileRetryTimer.Start();
+            }
+            OnPropertyChanged(nameof(RemoteProfileStatus));
+            OnPropertyChanged(nameof(ShowRemoteProfileStatus));
         }
-        catch (Exception ex)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            _runtime.Monitor.SetNotice(ex.Message);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            ErrorLog.Write("Resolve and save FortCards player identity", ex);
+            if (_remoteProfileIdentityKey == identityKey)
+            {
+                if (!hasCachedIdentity)
+                {
+                    _remoteProfilePlayerId = null;
+                }
+                _remoteProfileResolving = false;
+                _remoteProfileRetryAfter[identityKey] = DateTimeOffset.UtcNow.AddMinutes(1);
+                _remoteProfileRetryTimer.Start();
+                OnPropertyChanged(nameof(RemoteProfileStatus));
+                OnPropertyChanged(nameof(ShowRemoteProfileStatus));
+            }
+        }
+        finally
+        {
+            if (_remoteProfileIdentityKey == identityKey)
+            {
+                _remoteProfileResolutionTask = null;
+            }
+        }
+    }
+
+    private void OpenStartupProfileIfRequested(long playerId)
+    {
+        if (!_startupProfileOpenPending)
+        {
+            return;
+        }
+        _startupProfileOpenPending = false;
+        OpenRemoteProfile(playerId);
+    }
+
+    private void OpenRemoteProfile(long playerId)
+    {
+        if (!RemoteProfileUrl.TryBuild(playerId, out var uri, out var error))
+        {
+            _runtime.Monitor.SetNotice(error);
+            return;
+        }
+
+        OpenExternalUrl(uri!.AbsoluteUri);
+    }
+
+    private void OpenExternalUrl(string url)
+    {
+        try
+        {
+            _openExternalLink(url);
+        }
+        catch (Exception ex) when (ex is Win32Exception or IOException or InvalidOperationException
+            or PlatformNotSupportedException or UnauthorizedAccessException or SecurityException)
+        {
+            ErrorLog.Write("Open FortCards player profile", ex);
+            _runtime.Monitor.SetNotice(L.T("main.remote_profile_open_failed"));
+        }
+    }
+
+    private static string? ProfileIdentityKey(MonitorState? state)
+    {
+        if (!string.IsNullOrWhiteSpace(state?.CurrentEpicId))
+        {
+            return "epic:" + state.CurrentEpicId.Trim().ToUpperInvariant();
+        }
+        if (!string.IsNullOrWhiteSpace(state?.CurrentPlayerName))
+        {
+            return "name:" + state.CurrentPlayerName.Trim().ToUpperInvariant();
+        }
+        return null;
+    }
+
+    private void OnRemoteProfileRetryTimerTick(object? sender, EventArgs e)
+    {
+        if (!_remoteProfileResolving)
+        {
+            _ = ResolveRemoteProfileAsync();
         }
     }
 
@@ -733,6 +963,10 @@ internal sealed partial class DashboardViewModel : ObservableObject, IDisposable
         _disposed = true;
         _completionTimer.Stop();
         _completionTimer.Tick -= OnCompletionTimerTick;
+        _remoteProfileRetryTimer.Stop();
+        _remoteProfileRetryTimer.Tick -= OnRemoteProfileRetryTimerTick;
+        _remoteProfileCancellation?.Cancel();
+        _remoteProfileCancellation?.Dispose();
         _runtime.Monitor.Changed -= OnMonitorChanged;
         _runtime.ApiSync.StateChanged -= OnApiStateChanged;
         _runtime.ApiSync.ProgressChanged -= OnApiProgressChanged;

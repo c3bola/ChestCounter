@@ -137,6 +137,9 @@ internal sealed partial class SettingsViewModel : ObservableObject
     };
     public string ApiBaseUrl => _runtime.ApiSync.Configuration.BaseUrl;
     public string ApiSyncStatus => _apiStatus;
+    public string ReplayDiagnosticsTitle => "Replay Diagnostics";
+    public string ReplayReadFailedLabel => "Read Failed Replays";
+    public string ReplayCopyDiagnosticLabel => "Copy Replay Diagnostic Log";
     public bool CanStartApiOperation => !_apiOperationRunning && !_runtime.ApiSync.State.IsSyncing;
     public bool CanSyncNow => CanStartApiOperation;
     public string ReplaysFolderLabel => L.T("settings.replays_folder");
@@ -376,6 +379,7 @@ internal sealed partial class SettingsViewModel : ObservableObject
     public event Action<string>? SocialLinkRequested;
     public event Action? ApiUrlEditRequested;
     public event Action<bool>? ApiOperationRequested;
+    public event Action<bool>? ReplayDiagnosticsRequested;
 
     [RelayCommand]
     private void ChooseFolder() => FolderSelectionRequested?.Invoke();
@@ -415,6 +419,12 @@ internal sealed partial class SettingsViewModel : ObservableObject
 
     [RelayCommand]
     private void SyncNow() => ApiOperationRequested?.Invoke(false);
+
+    [RelayCommand]
+    private void ReadFailedReplays() => ReplayDiagnosticsRequested?.Invoke(true);
+
+    [RelayCommand]
+    private void CopyReplayDiagnosticLog() => ReplayDiagnosticsRequested?.Invoke(false);
 
     public void SaveApiBaseUrl(string url)
     {

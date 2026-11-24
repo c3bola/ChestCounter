@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using System.Globalization;
 
 namespace ChestCounter;
 
@@ -22,6 +23,18 @@ public sealed record ApiSyncState(
     int Failed,
     string Status,
     DateTimeOffset? LastSynchronizedAtUtc);
+
+public enum FortCardsPlayerResolutionStatus
+{
+    Found,
+    NoIdentity,
+    NotFound,
+    Ambiguous,
+    Unavailable,
+    InvalidResponse,
+}
+
+public sealed record FortCardsPlayerResolution(FortCardsPlayerResolutionStatus Status, long? PlayerId = null);
 
 public sealed class ApiSyncService : IDisposable
 {
@@ -58,6 +71,8 @@ public sealed class ApiSyncService : IDisposable
     private int _failed;
     private bool _started;
     private bool _disposed;
+
+    public event Action<string>? ReplaySynchronized;
     private bool _localProcessing;
 
     public ApiSyncService(
@@ -71,8 +86,10 @@ public sealed class ApiSyncService : IDisposable
         _diagnosticsLogPath = Path.Combine(Path.GetDirectoryName(queuePath)!, "api-sync.log");
         _httpClient = httpClient ?? new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
         _ownsHttpClient = httpClient == null;
+        // A shared token request must not block profile lookups behind local replay processing.
         _auth = new ApiAuthService(
-            (request, cancellationToken) => SendRequestAsync(request, ApiAuthService.MockEndpoint, replay: null, cancellationToken),
+            (request, cancellationToken) => SendRequestAsync(
+                request, ApiAuthService.MockEndpoint, replay: null, cancellationToken, bypassLocalProcessing: true),
             mockAuthEndpointAuthorized);
         _auth.StatusChanged += status => AuthStatusChanged?.Invoke(status);
 
@@ -80,6 +97,11 @@ public sealed class ApiSyncService : IDisposable
         {
             _queue = LoadQueue();
             var recovered = false;
+            foreach (var item in _queue.Where(item => item.State == "synchronized" && item.Request?.Data != null))
+            {
+                item.Request = item.Request with { Data = null };
+                recovered = true;
+            }
             foreach (var item in _queue.Where(item => item.State == "processing"))
             {
                 item.State = "pending";
@@ -118,6 +140,281 @@ public sealed class ApiSyncService : IDisposable
     public event Action<ApiOperationLogEntry>? DiagnosticReported;
 
     public ApiOperationProgress? Progress => _progress;
+
+    public async Task<FortCardsPlayerResolution> ResolveFortCardsPlayerAsync(
+        string? epicId,
+        string? playerName,
+        CancellationToken cancellationToken = default)
+    {
+        epicId = string.IsNullOrWhiteSpace(epicId) ? null : epicId.Trim();
+        playerName = string.IsNullOrWhiteSpace(playerName) ? null : playerName.Trim();
+        if (epicId == null && playerName == null)
+        {
+            return new FortCardsPlayerResolution(FortCardsPlayerResolutionStatus.NoIdentity);
+        }
+
+        var config = _configStore.Load();
+        if (_configStore.LoadError != null)
+        {
+            return new FortCardsPlayerResolution(FortCardsPlayerResolutionStatus.Unavailable);
+        }
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(8));
+        try
+        {
+            var unavailable = false;
+            if (epicId != null)
+            {
+                var byEpic = await LookupFortCardsPlayersAsync(config, "epic_id", epicId, null, timeout.Token).ConfigureAwait(false);
+                if (byEpic.Status is FortCardsPlayerResolutionStatus.Found or FortCardsPlayerResolutionStatus.Ambiguous)
+                {
+                    return byEpic;
+                }
+                unavailable |= byEpic.Status is FortCardsPlayerResolutionStatus.Unavailable or FortCardsPlayerResolutionStatus.InvalidResponse;
+            }
+
+            if (playerName != null)
+            {
+                var byName = await LookupFortCardsPlayersAsync(config, "name", playerName, epicId, timeout.Token).ConfigureAwait(false);
+                if (byName.Status is FortCardsPlayerResolutionStatus.Found or FortCardsPlayerResolutionStatus.Ambiguous)
+                {
+                    return byName;
+                }
+                unavailable |= byName.Status is FortCardsPlayerResolutionStatus.Unavailable or FortCardsPlayerResolutionStatus.InvalidResponse;
+
+                var bySearch = await SearchFortCardsPlayerAsync(config, playerName, epicId, timeout.Token).ConfigureAwait(false);
+                if (bySearch.Status != FortCardsPlayerResolutionStatus.NotFound)
+                {
+                    return bySearch;
+                }
+            }
+
+            return new FortCardsPlayerResolution(unavailable
+                ? FortCardsPlayerResolutionStatus.Unavailable
+                : FortCardsPlayerResolutionStatus.NotFound);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            ErrorLog.Write("Resolve FortCards player identity", new TimeoutException("The API request timed out."));
+            return new FortCardsPlayerResolution(FortCardsPlayerResolutionStatus.Unavailable);
+        }
+    }
+
+    private async Task<FortCardsPlayerResolution> LookupFortCardsPlayersAsync(
+        ApiIntegrationConfig config, string parameter, string identity, string? expectedEpicId, CancellationToken cancellationToken)
+    {
+        var endpoint = $"players?{parameter}={Uri.EscapeDataString(identity)}&page=1&page_size=100";
+        try
+        {
+            using var response = await SendAuthorizedAsync(
+                HttpMethod.Get, config, endpoint, null, replay: null, cancellationToken,
+                preserveResponseContent: true, bypassLocalProcessing: true).ConfigureAwait(false);
+            if (response.StatusCode != HttpStatusCode.OK)
+            {
+                ErrorLog.Write("Resolve FortCards player identity", $"Player lookup returned HTTP {(int)response.StatusCode}.");
+                return new FortCardsPlayerResolution(FortCardsPlayerResolutionStatus.Unavailable);
+            }
+            var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            var result = ParseFortCardsPlayerResolution(body, parameter == "epic_id", identity, expectedEpicId);
+            if (result.Status == FortCardsPlayerResolutionStatus.InvalidResponse)
+            {
+                ErrorLog.Write("Resolve FortCards player identity", "Invalid player lookup response.");
+            }
+            return result;
+        }
+        catch (Exception ex) when (ex is ApiRequestException or HttpRequestException or IOException or InvalidOperationException or JsonException)
+        {
+            ErrorLog.Write("Resolve FortCards player identity", ex);
+            return new FortCardsPlayerResolution(FortCardsPlayerResolutionStatus.Unavailable);
+        }
+    }
+
+    private async Task<FortCardsPlayerResolution> SearchFortCardsPlayerAsync(
+        ApiIntegrationConfig config, string name, string? expectedEpicId, CancellationToken cancellationToken)
+    {
+        if (name.Length > 200)
+        {
+            return new FortCardsPlayerResolution(FortCardsPlayerResolutionStatus.NotFound);
+        }
+
+        var endpoint = $"analytics/screens/search?search={Uri.EscapeDataString(name)}&page=1&page_size=100";
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(new Uri(config.BaseUrl), endpoint));
+            using var response = await SendRequestAsync(request, endpoint, replay: null, cancellationToken,
+                preserveResponseContent: true, bypassLocalProcessing: true).ConfigureAwait(false);
+            if (response.StatusCode != HttpStatusCode.OK)
+            {
+                ErrorLog.Write("Search FortCards players", $"Public player search returned HTTP {(int)response.StatusCode}.");
+                return new FortCardsPlayerResolution(FortCardsPlayerResolutionStatus.Unavailable);
+            }
+
+            using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false));
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("success", out var success) || success.ValueKind != JsonValueKind.True
+                || !root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object
+                || !data.TryGetProperty("items", out var items) || items.ValueKind != JsonValueKind.Array
+                || !data.TryGetProperty("total", out var totalElement) || !totalElement.TryGetInt64(out var total) || total < 0
+                || !data.TryGetProperty("page", out var pageElement) || !pageElement.TryGetInt32(out var page) || page != 1
+                || !data.TryGetProperty("page_size", out var sizeElement) || !sizeElement.TryGetInt32(out var pageSize)
+                || pageSize is < 1 or > 100 || items.GetArrayLength() > pageSize || total < items.GetArrayLength())
+            {
+                throw new JsonException("Invalid public player search response.");
+            }
+            if (total > items.GetArrayLength())
+            {
+                return new FortCardsPlayerResolution(FortCardsPlayerResolutionStatus.Ambiguous);
+            }
+
+            var matches = new HashSet<long>();
+            foreach (var item in items.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object
+                    || !item.TryGetProperty("player_id", out var idElement) || !idElement.TryGetInt64(out var id) || id <= 0
+                    || !item.TryGetProperty("display_name", out var displayName)
+                    || displayName.ValueKind is not (JsonValueKind.String or JsonValueKind.Null))
+                {
+                    throw new JsonException("Invalid public player search item.");
+                }
+                if (displayName.ValueKind == JsonValueKind.String
+                    && string.Equals(displayName.GetString(), name, StringComparison.OrdinalIgnoreCase))
+                {
+                    matches.Add(id);
+                }
+            }
+            if (matches.Count != 1)
+            {
+                return new FortCardsPlayerResolution(matches.Count == 0
+                    ? FortCardsPlayerResolutionStatus.NotFound : FortCardsPlayerResolutionStatus.Ambiguous);
+            }
+
+            var playerId = matches.Single();
+            if (expectedEpicId != null)
+            {
+                var summaryEndpoint = $"analytics/players/{playerId}/summary";
+                using var summaryRequest = new HttpRequestMessage(HttpMethod.Get, new Uri(new Uri(config.BaseUrl), summaryEndpoint));
+                using var summaryResponse = await SendRequestAsync(summaryRequest, summaryEndpoint, replay: null, cancellationToken,
+                    preserveResponseContent: true, bypassLocalProcessing: true).ConfigureAwait(false);
+                if (summaryResponse.StatusCode != HttpStatusCode.OK)
+                {
+                    ErrorLog.Write("Resolve FortCards player identity", $"Public player summary returned HTTP {(int)summaryResponse.StatusCode}.");
+                    return new FortCardsPlayerResolution(FortCardsPlayerResolutionStatus.Unavailable);
+                }
+                using var summary = JsonDocument.Parse(await summaryResponse.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false));
+                var summaryRoot = summary.RootElement;
+                if (summaryRoot.ValueKind != JsonValueKind.Object
+                    || !summaryRoot.TryGetProperty("success", out var summarySuccess) || summarySuccess.ValueKind != JsonValueKind.True
+                    || !summaryRoot.TryGetProperty("data", out var summaryData) || summaryData.ValueKind != JsonValueKind.Object
+                    || !summaryData.TryGetProperty("player_id", out var summaryId) || !summaryId.TryGetInt64(out var id) || id != playerId
+                    || !summaryData.TryGetProperty("epic_id", out var summaryEpic)
+                    || summaryEpic.ValueKind is not (JsonValueKind.String or JsonValueKind.Null))
+                {
+                    throw new JsonException("Invalid public player summary response.");
+                }
+                if (summaryEpic.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(summaryEpic.GetString())
+                    && !string.Equals(summaryEpic.GetString(), expectedEpicId, StringComparison.OrdinalIgnoreCase))
+                {
+                    return new FortCardsPlayerResolution(FortCardsPlayerResolutionStatus.Ambiguous);
+                }
+            }
+            return new FortCardsPlayerResolution(FortCardsPlayerResolutionStatus.Found, playerId);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or IOException or InvalidOperationException or JsonException)
+        {
+            ErrorLog.Write("Search FortCards players", ex);
+            return new FortCardsPlayerResolution(FortCardsPlayerResolutionStatus.Unavailable);
+        }
+    }
+
+    private static FortCardsPlayerResolution ParseFortCardsPlayerResolution(
+        string body,
+        bool useEpicId,
+        string identity,
+        string? expectedEpicId)
+    {
+        using var document = JsonDocument.Parse(body);
+        var root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object
+            || !root.TryGetProperty("success", out var success)
+            || success.ValueKind != JsonValueKind.True
+            || !root.TryGetProperty("data", out var data)
+            || data.ValueKind != JsonValueKind.Array
+            || !root.TryGetProperty("pagination", out var pagination)
+            || pagination.ValueKind != JsonValueKind.Object
+            || !pagination.TryGetProperty("page", out var pageElement)
+            || !pageElement.TryGetInt32(out var page)
+            || page < 1
+            || !pagination.TryGetProperty("page_size", out var pageSizeElement)
+            || !pageSizeElement.TryGetInt32(out var pageSize)
+            || pageSize is < 1 or > 100
+            || !pagination.TryGetProperty("total", out var totalElement)
+            || !totalElement.TryGetInt64(out var total)
+            || total < 0
+            || !pagination.TryGetProperty("total_pages", out var totalPagesElement)
+            || !totalPagesElement.TryGetInt32(out var totalPages)
+            || totalPages < 0)
+        {
+            return new FortCardsPlayerResolution(FortCardsPlayerResolutionStatus.InvalidResponse);
+        }
+
+        if (data.GetArrayLength() > pageSize
+            || totalPages == 0 && data.GetArrayLength() != 0
+            || totalPages > 0 && total == 0)
+        {
+            return new FortCardsPlayerResolution(FortCardsPlayerResolutionStatus.InvalidResponse);
+        }
+
+        var matchingIds = new HashSet<long>();
+        foreach (var player in data.EnumerateArray())
+        {
+            if (player.ValueKind != JsonValueKind.Object
+                || !player.TryGetProperty("id", out var idElement)
+                || !idElement.TryGetInt64(out var playerId)
+                || playerId <= 0
+                || !player.TryGetProperty("created_at", out var createdAtElement)
+                || createdAtElement.ValueKind != JsonValueKind.String
+                || !DateTimeOffset.TryParse(createdAtElement.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.None, out _)
+                || !player.TryGetProperty("updated_at", out var updatedAtElement)
+                || updatedAtElement.ValueKind != JsonValueKind.String
+                || !DateTimeOffset.TryParse(updatedAtElement.GetString(), CultureInfo.InvariantCulture, DateTimeStyles.None, out _))
+            {
+                return new FortCardsPlayerResolution(FortCardsPlayerResolutionStatus.InvalidResponse);
+            }
+
+            var match = useEpicId
+                ? player.TryGetProperty("epic_id", out var epicIdElement)
+                    && epicIdElement.ValueKind == JsonValueKind.String
+                    && string.Equals(epicIdElement.GetString(), identity, StringComparison.OrdinalIgnoreCase)
+                : player.TryGetProperty("latest_player_name", out var nameElement)
+                    && nameElement.ValueKind == JsonValueKind.String
+                    && string.Equals(nameElement.GetString(), identity, StringComparison.OrdinalIgnoreCase);
+            if (match)
+            {
+                if (!useEpicId && expectedEpicId != null
+                    && player.TryGetProperty("epic_id", out var candidateEpic)
+                    && candidateEpic.ValueKind == JsonValueKind.String
+                    && !string.IsNullOrWhiteSpace(candidateEpic.GetString())
+                    && !string.Equals(candidateEpic.GetString(), expectedEpicId, StringComparison.OrdinalIgnoreCase))
+                {
+                    return new FortCardsPlayerResolution(FortCardsPlayerResolutionStatus.Ambiguous);
+                }
+                matchingIds.Add(playerId);
+            }
+        }
+
+        if (matchingIds.Count > 1 || totalPages > 1)
+        {
+            return new FortCardsPlayerResolution(FortCardsPlayerResolutionStatus.Ambiguous);
+        }
+        if (matchingIds.Count == 0)
+        {
+            return new FortCardsPlayerResolution(FortCardsPlayerResolutionStatus.NotFound);
+        }
+
+        return new FortCardsPlayerResolution(FortCardsPlayerResolutionStatus.Found, matchingIds.Single());
+    }
 
     public ApiSyncState State
     {
@@ -854,9 +1151,11 @@ public sealed class ApiSyncService : IDisposable
                     current.CompletedAtUtc = DateTimeOffset.UtcNow;
                     current.NextAttemptUtc = null;
                     current.LastError = null;
+                    current.Request = current.Request with { Data = null };
                     SaveQueue();
                 }
             }
+            ReplaySynchronized?.Invoke(entry.ReplayFile.FileSha256);
             SetStatus($"Synchronized replay {entry.ReplayFile.FileName}.");
             return true;
         }
@@ -936,7 +1235,9 @@ public sealed class ApiSyncService : IDisposable
         HttpRequestMessage request,
         string endpoint,
         QueueEntry? replay,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool preserveResponseContent = false,
+        bool bypassLocalProcessing = false)
     {
         var replayFileName = replay?.ReplayFile.FileName;
         var replaySha256 = replay?.ReplayFile.FileSha256;
@@ -952,7 +1253,9 @@ public sealed class ApiSyncService : IDisposable
         HttpResponseMessage response;
         try
         {
-            Task<HttpResponseMessage>? sendTask = null;
+            Task<HttpResponseMessage>? sendTask = bypassLocalProcessing
+                ? _httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+                : null;
             while (sendTask == null)
             {
                 await WaitForLocalProcessingToFinishAsync(cancellationToken).ConfigureAwait(false);
@@ -988,6 +1291,10 @@ public sealed class ApiSyncService : IDisposable
         string? responseBody;
         try
         {
+            if (preserveResponseContent && response.Content != null)
+            {
+                await response.Content.LoadIntoBufferAsync(cancellationToken).ConfigureAwait(false);
+            }
             responseBody = endpoint == ApiAuthService.MockEndpoint
                 ? "[Authentication response omitted.]"
                 : await ReadResponseSummaryAsync(response.Content, cancellationToken).ConfigureAwait(false);
@@ -1341,7 +1648,9 @@ public sealed class ApiSyncService : IDisposable
         string endpoint,
         object? body,
         QueueEntry? replay,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool preserveResponseContent = false,
+        bool bypassLocalProcessing = false)
     {
         var baseUri = new Uri(config.BaseUrl);
         for (var attempt = 0; ; attempt++)
@@ -1361,7 +1670,13 @@ public sealed class ApiSyncService : IDisposable
             {
                 request.Content = JsonContent.Create(body, body.GetType(), options: Json);
             }
-            var response = await SendRequestAsync(request, endpoint, replay, cancellationToken).ConfigureAwait(false);
+            var response = await SendRequestAsync(
+                request,
+                endpoint,
+                replay,
+                cancellationToken,
+                preserveResponseContent,
+                bypassLocalProcessing).ConfigureAwait(false);
             if (response.StatusCode != HttpStatusCode.Unauthorized)
             {
                 return response;
@@ -1421,6 +1736,36 @@ public sealed class ApiSyncService : IDisposable
         lock (_queueGate)
         {
             return _queue.Count(item => item.State == state);
+        }
+    }
+
+    public IReadOnlyCollection<string> SynchronizedHashes
+    {
+        get
+        {
+            lock (_queueGate)
+            {
+                return _queue.Where(item => item.State == "synchronized")
+                    .Select(item => item.ReplayFile.FileSha256)
+                    .Where(hash => !string.IsNullOrWhiteSpace(hash))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+            }
+        }
+    }
+
+    public IReadOnlyCollection<string> PendingPayloadHashes
+    {
+        get
+        {
+            lock (_queueGate)
+            {
+                return _queue.Where(item => item.State is "pending" or "failed" or "processing")
+                    .Select(item => item.ReplayFile.FileSha256)
+                    .Where(hash => !string.IsNullOrWhiteSpace(hash))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+            }
         }
     }
 

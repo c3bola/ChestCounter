@@ -62,6 +62,15 @@
           </StackPanel>
         </Border>
         <Border Background="{StaticResource CardBackground}" CornerRadius="14" Padding="14">
+          <StackPanel Spacing="8">
+            <TextBlock Text="{Binding ReplayDiagnosticsTitle}" FontSize="15" FontWeight="Bold" />
+            <WrapPanel Orientation="Horizontal">
+              <Button Content="{Binding ReplayReadFailedLabel}" Command="{Binding ReadFailedReplaysCommand}" Margin="0,0,8,0" />
+              <Button Content="{Binding ReplayCopyDiagnosticLabel}" Command="{Binding CopyReplayDiagnosticLogCommand}" />
+            </WrapPanel>
+          </StackPanel>
+        </Border>
+        <Border Background="{StaticResource CardBackground}" CornerRadius="14" Padding="14">
           <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="8">
             <TextBlock Text="{Binding ReplaysFolderLabel}" FontSize="15" FontWeight="Bold" />
             <Button Grid.Column="1" Content="{Binding ChangeLabel}" Command="{Binding ChooseFolderCommand}" />

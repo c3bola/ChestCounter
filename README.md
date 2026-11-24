@@ -79,6 +79,10 @@ The application generates local reports containing match and statistics
 information. The details shown depend on the data extracted from replays
 and the enabled settings.
 
+The dashboard's Report button opens the matching FortCards player profile
+in the default browser. If the profile cannot be identified safely or the
+API is unavailable, it opens the general player list instead.
+
 ### Teammates and team
 
 When teammate tracking is enabled, the application can display

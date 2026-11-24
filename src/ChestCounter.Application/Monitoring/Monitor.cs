@@ -32,6 +32,8 @@ public sealed record LocalReplayProgress(
 /// <summary>Lo que muestra la ventana.</summary>
 public sealed record MonitorState(OverlayState Overlay, IReadOnlyList<Profile> Profiles, string? CurrentKey, UpdateInfo? Update, string? Notice, bool AutoCloseOffer, ChestStats Stats)
 {
+    public string? CurrentEpicId { get; init; }
+    public string? CurrentPlayerName { get; init; }
     /// <summary>Equipo de la partida en curso o de la última (null si «Compañeros» está desactivado).</summary>
     public TeamSummary? Team { get; init; }
     public bool PirateTokenLive { get; init; }
@@ -341,6 +343,32 @@ public sealed class Monitor
     /// <summary>Nombre del perfil mostrado, o null si aún no hay partidas.</summary>
     public string? ShownProfileName => _shownName;
 
+    public FortCardsPlayerIdentity? GetFortCardsPlayerIdentity(string identityKey)
+    {
+        lock (_cfgGate)
+        {
+            return _config.FortCardsPlayerIdentities.TryGetValue(identityKey, out var identity)
+                ? identity
+                : null;
+        }
+    }
+
+    public void SetFortCardsPlayerIdentity(string identityKey, long playerId)
+    {
+        if (string.IsNullOrWhiteSpace(identityKey) || playerId <= 0)
+        {
+            throw new ArgumentException("A profile identity key and positive FortCards player ID are required.");
+        }
+
+        Change(config => config.FortCardsPlayerIdentities[identityKey] =
+            new FortCardsPlayerIdentity(playerId, DateTimeOffset.UtcNow));
+    }
+
+    public void RemoveFortCardsPlayerIdentity(string identityKey)
+    {
+        Change(config => config.FortCardsPlayerIdentities.Remove(identityKey));
+    }
+
     /// <summary>Cofres estimados de antes de usar el contador, del perfil mostrado.</summary>
     public int InitialChests
     {
@@ -373,24 +401,11 @@ public sealed class Monitor
     }
 
     /// <summary>
-    /// Al arrancar, antes de leer replays: rehace el informe (si no, tras actualizar seguiría el de la versión anterior
-    /// hasta la próxima partida) y lo abre si está activado «Abrir el informe al iniciar». No se abre cuando el contador
-    /// arranca solo con Fortnite, para no tapar el juego.
+    /// Regenera los informes locales al arrancar. El Dashboard abre el perfil remoto cuando se resuelve su identidad.
     /// </summary>
     private void WriteReportAtStart()
     {
         _services.Reporting.WriteAll(_store, _config, _data);
-        if (_config.OpenReportOnStart && !AutoMode && File.Exists(_store.ReportPath))
-        {
-            try
-            {
-                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(_store.ReportPath) { UseShellExecute = true })?.Dispose();
-            }
-            catch
-            {
-                // sin navegador: el botón «Informe» de la ventana sigue funcionando
-            }
-        }
     }
 
     public void ChangeDemosFolder(string folder)
@@ -821,6 +836,13 @@ public sealed class Monitor
         var shown = Profiles.Current(_data, _config);
         _shownKey = shown?.Key;
         _shownName = shown?.Name;
+        var currentEpicId = shown == null
+            ? null
+            : _data.Matches
+                .Where(match => Profiles.Key(match) == shown.Key)
+                .OrderByDescending(match => match.MatchStartUtc ?? match.AnalyzedAtUtc)
+                .Select(match => match.EpicId)
+                .FirstOrDefault(epicId => !string.IsNullOrWhiteSpace(epicId));
         var overlay = BuildOverlay();
         _latestOverlay = overlay;
         _services.Reporting.WriteOverlay(_store, overlay, _config.OverlayScalePercent);
@@ -834,6 +856,8 @@ public sealed class Monitor
             : _notice ?? (_autoCloseAt != null ? L.T("status.fortnite_is_closed_the_counter_closes_in_30") : null);
         var state = new MonitorState(overlay, Profiles.List(_data, _config), Profiles.Current(_data, _config)?.Key, _update, notice, _autoCloseAt != null, BuildStats())
         {
+            CurrentEpicId = currentEpicId,
+            CurrentPlayerName = shown?.Name,
             Team = BuildTeam(),
             PirateTokenLive = _tracker.IsLive
                 && _tracker.LiveMatch != null
@@ -1091,6 +1115,13 @@ public sealed class Monitor
 
     private void SaveQuietly()
     {
-        try { _store.SaveConfig(_config); } catch { /* ignore */ }
+        try
+        {
+            _store.SaveConfig(_config);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _services.Errors.Write("Save application configuration", ex);
+        }
     }
 }

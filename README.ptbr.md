@@ -47,7 +47,9 @@ A janela do aplicativo pode ser redimensionada. A interface se adapta ao espaço
 
 ## Relatórios
 
-O relatório é aberto no navegador padrão e atualizado automaticamente enquanto o aplicativo está em execução.
+O botão **Relatório** abre o perfil correspondente na FortCards no navegador padrão. Se o perfil não puder ser identificado com segurança ou a API estiver indisponível, ele abre a lista geral de jogadores.
+
+O relatório local é atualizado automaticamente enquanto o aplicativo está em execução.
 
 | Seção | Informações |
 |---|---|

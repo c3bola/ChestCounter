@@ -45,6 +45,7 @@ public sealed class Store : IMonitorStorage
     public string CsvPath => Path.Combine(Folder, "matches.csv");
     public string PrizeNamesPath => Path.Combine(Folder, "treasures.json");
     public string ErrorLogPath => Path.Combine(Folder, "errors.log");
+    public string FailedReplaysPath => Path.Combine(Folder, "failed-replays.json");
 
     /// <summary>Known prizes from the treasure hunt. New ids are added with an empty name.</summary>
     public static Dictionary<string, string> DefaultPrizeNames => L.Code != "es"
@@ -130,10 +131,61 @@ public sealed class Store : IMonitorStorage
         }
     }
 
-    public Config? LoadConfig() => Load<Config>(ConfigPath);
+    public Config? LoadConfig()
+    {
+        var config = Load<Config>(ConfigPath);
+        if (config != null)
+        {
+            config.FortCardsPlayerIdentities ??= new Dictionary<string, FortCardsPlayerIdentity>(StringComparer.OrdinalIgnoreCase);
+        }
+        return config;
+    }
     public void SaveConfig(Config config) => Save(ConfigPath, config);
     public TrackerData LoadData() => Load<TrackerData>(DataPath) ?? new TrackerData { AnalyzerVersion = ReplayAnalyzer.CurrentVersion };
     public void SaveData(TrackerData data) => Save(DataPath, data);
+
+    public List<FailedReplay> LoadFailedReplays() =>
+        Load<List<FailedReplay>>(FailedReplaysPath) ?? new List<FailedReplay>();
+
+    public void SaveFailedReplays(List<FailedReplay> failures) =>
+        Save(FailedReplaysPath, failures);
+
+    /// <summary>
+    /// Removes RawReplayData only for replay hashes that have a confirmed synchronized queue entry.
+    /// Creates a recoverable backup and is safe to run repeatedly.
+    /// </summary>
+    public int MigrateConfirmedRawReplayData(TrackerData data, IReadOnlyCollection<string> synchronizedHashes)
+    {
+        if (synchronizedHashes.Count == 0)
+        {
+            return 0;
+        }
+
+        var hashes = synchronizedHashes.Where(hash => hash.Length == 64)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var migrated = data.Matches.Where(match =>
+            match.RawReplayData != null
+            && match.ReplayFileSha256 != null
+            && hashes.Contains(match.ReplayFileSha256)).ToList();
+        if (migrated.Count == 0)
+        {
+            return 0;
+        }
+
+        if (File.Exists(DataPath))
+        {
+            var backup = DataPath + $".pre-raw-migration-{DateTime.Now:yyyyMMdd-HHmmss}";
+            File.Copy(DataPath, backup, overwrite: true);
+        }
+
+        foreach (var match in migrated)
+        {
+            match.IsSynced = true;
+            match.RawReplayData = null;
+        }
+        SaveData(data);
+        return migrated.Count;
+    }
 
     private static T? Load<T>(string path) where T : class
     {

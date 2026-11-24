@@ -3,7 +3,6 @@ using Avalonia.Interactivity;
 using Avalonia.Input.Platform;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
-using System.Diagnostics;
 
 namespace ChestCounter;
 
@@ -34,6 +33,7 @@ public partial class SettingsWindow : Window
         _viewModel.SocialLinkRequested += OpenSocialLink;
         _viewModel.ApiUrlEditRequested += EditApiUrl;
         _viewModel.ApiOperationRequested += StartApiOperation;
+        _viewModel.ReplayDiagnosticsRequested += RunReplayDiagnostics;
         _runtime.ApiSync.AuthStatusChanged += OnApiAuthStatusChanged;
         _runtime.ApiSync.StateChanged += OnApiSyncStateChanged;
         if (_runtime.Monitor.LatestOverlay is { } overlay)
@@ -133,6 +133,50 @@ public partial class SettingsWindow : Window
         {
             _viewModel.SetApiOperationRunning(false);
             _viewModel.RefreshApiStatus();
+        }
+    }
+
+    private async void RunReplayDiagnostics(bool readFailed)
+    {
+        var failures = _runtime.Tracker.FailedReplays;
+        if (readFailed)
+        {
+            try
+            {
+                var remaining = await Task.Run(() => _runtime.Tracker.ReadFailedReplays());
+                _viewModel.SetStatus(remaining.Count == 0
+                    ? "Failed replay registry cleared."
+                    : $"{remaining.Count} failed replay(s) remain.");
+            }
+            catch (Exception ex)
+            {
+                ErrorLog.Write("Read failed replays", ex);
+                _viewModel.SetStatus("Failed replay recovery encountered an error.");
+            }
+            return;
+        }
+
+        if (failures.Count == 0)
+        {
+            _viewModel.SetStatus("No failed replay diagnostic is available.");
+            return;
+        }
+
+        try
+        {
+            var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+            if (clipboard == null)
+            {
+                throw new InvalidOperationException("Clipboard is unavailable.");
+            }
+            var report = _runtime.Tracker.CopyReplayDiagnosticLog(failures[^1]);
+            await clipboard.SetTextAsync(report);
+            _viewModel.SetStatus("Replay diagnostic log copied.");
+        }
+        catch (Exception ex)
+        {
+            ErrorLog.Write("Copy replay diagnostic log", ex);
+            _viewModel.SetStatus("Failed to copy the replay diagnostic log.");
         }
     }
 
@@ -261,10 +305,11 @@ public partial class SettingsWindow : Window
     {
         try
         {
-            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true })?.Dispose();
+            ExternalLinkLauncher.Open(url);
         }
         catch (Exception ex)
         {
+            ErrorLog.Write("Open external link", ex);
             _viewModel.SetStatus(ex.Message);
         }
     }

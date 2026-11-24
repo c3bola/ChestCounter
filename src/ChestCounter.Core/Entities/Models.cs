@@ -98,6 +98,8 @@ public sealed class MatchRecord
     public Dictionary<string, int> OtherInteractions { get; set; } = new();
     public int AnalyzerVersion { get; set; } = 1;
     public ReplayRawData? RawReplayData { get; set; }
+    /// <summary>True only after the FortCards API confirmed persistence of this match.</summary>
+    public bool IsSynced { get; set; }
     public bool IsBattleRoyale { get; set; } = true;
     public List<ChestRecord> Chests { get; set; } = new();
     public List<TreasureFind> TreasureFinds { get; set; } = new();
@@ -145,6 +147,7 @@ public sealed class MatchRecord
         {
             return this;
         }
+
         var copy = (MatchRecord)MemberwiseClone();
         copy.ChestsOpened = ChestsOpened + extra + mates;
         copy.TeammatesAdded = mates;
@@ -152,6 +155,75 @@ public sealed class MatchRecord
         copy.NearbyTreasureFinds = NearbyTreasureFinds.Where(find => find.Scope != "team" || !addTeammateTreasures).ToList();
         return copy;
     }
+}
+
+/// <summary>Lightweight compatibility model for the fields retained in local match history.</summary>
+public sealed class MatchSummary
+{
+    public string MatchKey { get; set; } = "";
+    public string ReplayFileName { get; set; } = "";
+    public string ReplayHash { get; set; } = "";
+    public DateTime PlayedAt { get; set; }
+    public int ChestsOpened { get; set; }
+    public int ChestsDestroyed { get; set; }
+    public int OtherContainers { get; set; }
+    public int TreasuresFound { get; set; }
+    public int Eliminations { get; set; }
+    public int Placement { get; set; }
+    public bool IsSynced { get; set; }
+    public int AnalyzerVersion { get; set; } = 1;
+
+    public static MatchSummary FromMatch(MatchRecord match) => new()
+    {
+        MatchKey = match.SessionId,
+        ReplayFileName = match.ReplayFile,
+        ReplayHash = match.ReplayFileSha256 ?? "",
+        PlayedAt = match.MatchStartUtc ?? match.AnalyzedAtUtc,
+        ChestsOpened = match.ChestsOpened,
+        ChestsDestroyed = match.Chests.Count(chest => chest.Destroyed),
+        OtherContainers = match.OtherContainersOpened,
+        TreasuresFound = match.AllTreasureFinds.Count(),
+        Eliminations = match.Eliminations ?? 0,
+        Placement = match.Placement ?? 0,
+        IsSynced = match.IsSynced,
+        AnalyzerVersion = match.AnalyzerVersion,
+    };
+}
+
+/// <summary>Transient, serialized representation of one replay synchronization outbox operation.</summary>
+public sealed class ReplaySyncPayload
+{
+    public string MatchKey { get; set; } = "";
+    public string IdempotencyKey { get; set; } = "";
+    public string Payload { get; set; } = "";
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
+public sealed class FailedReplayAttempt
+{
+    public DateTime AttemptedAtUtc { get; set; } = DateTime.UtcNow;
+    public string Result { get; set; } = "";
+    public string? ErrorType { get; set; }
+    public string? ErrorMessage { get; set; }
+    public string? StackTrace { get; set; }
+}
+
+/// <summary>Lightweight persistent record for a replay that failed during local analysis.</summary>
+public sealed class FailedReplay
+{
+    public string ReplayFileName { get; set; } = "";
+    public string ReplayHash { get; set; } = "";
+    public string FilePath { get; set; } = "";
+    public long FileSizeBytes { get; set; }
+    public DateTime FailedAtUtc { get; set; } = DateTime.UtcNow;
+    public string FailureStage { get; set; } = "";
+    public string ErrorType { get; set; } = "";
+    public string ErrorMessage { get; set; } = "";
+    public string? StackTrace { get; set; }
+    public int Attempts { get; set; }
+    public string AnalyzerVersion { get; set; } = "";
+    public string ApplicationVersion { get; set; } = "";
+    public List<FailedReplayAttempt> History { get; set; } = new();
 }
 
 public sealed class ReplayRawData
@@ -166,6 +238,8 @@ public sealed class ReplayRawData
     public JsonElement Weapons { get; set; }
     public JsonElement Observations { get; set; }
 }
+
+public sealed record FortCardsPlayerIdentity(long PlayerId, DateTimeOffset LastResolvedAtUtc);
 
 public sealed class Config
 {
@@ -198,6 +272,8 @@ public sealed class Config
     /// </summary>
     [JsonPropertyName("OpenReportAtStartup")]
     public bool OpenReportOnStart { get; set; }
+    /// <summary>FortCards identities keyed by Epic ID, or normalized exact name when no Epic ID exists.</summary>
+    public Dictionary<string, FortCardsPlayerIdentity> FortCardsPlayerIdentities { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public int? OverlayX { get; set; }
     public int? OverlayY { get; set; }
     /// <summary>Overlay size as a percentage of the original window size.</summary>
@@ -256,6 +332,7 @@ public sealed class Config
         if (CountLootCannons) kinds.Add(ChestKinds.Cannon);
         return kinds;
     }
+
 }
 
 public sealed class TrackerData

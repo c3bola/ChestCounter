@@ -68,6 +68,573 @@ public sealed class ApiSyncServiceTests
     }
 
     [Fact]
+    public async Task RemotePlayerResolutionUsesAuthenticatedEpicIdLookup()
+    {
+        using var folder = new TemporaryFolder();
+        var configStore = new ApiIntegrationConfigStore(Path.Combine(folder.Path, "api-config.json"));
+        HttpRequestMessage? lookupRequest = null;
+        var handler = new StubHttpMessageHandler((_, _) => new HttpResponseMessage(HttpStatusCode.OK))
+        {
+            ProtectedResponderAsync = (request, _) =>
+            {
+                lookupRequest = request;
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(PlayerPage((170, "0123456789ABCDEF0123456789ABCDEF", "Player"))),
+                });
+            },
+        };
+        using var client = new HttpClient(handler);
+        using var service = CreateService(configStore, Path.Combine(folder.Path, "api-sync-queue.json"), client);
+
+        var result = await service.ResolveFortCardsPlayerAsync("0123456789abcdef0123456789abcdef", "OtherName");
+
+        Assert.Equal(FortCardsPlayerResolutionStatus.Found, result.Status);
+        Assert.Equal(170, result.PlayerId);
+        Assert.Contains("epic_id=0123456789abcdef0123456789abcdef", lookupRequest!.RequestUri!.Query);
+        Assert.DoesNotContain("name=", lookupRequest.RequestUri.Query);
+        Assert.Equal("Bearer " + TestJwt, lookupRequest.Headers.Authorization!.ToString());
+        Assert.Equal(1, handler.AuthCalls);
+    }
+
+    [Fact]
+    public async Task RemotePlayerResolutionCompletesWhileLocalReplayProcessingIsActive()
+    {
+        using var folder = new TemporaryFolder();
+        var configStore = new ApiIntegrationConfigStore(Path.Combine(folder.Path, "api-config.json"));
+        var handler = new StubHttpMessageHandler((_, _) => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(PlayerPage((170, "epic-id", "Player"))),
+        });
+        using var client = new HttpClient(handler);
+        using var service = CreateService(configStore, Path.Combine(folder.Path, "api-sync-queue.json"), client);
+        service.SetLocalProcessing(true);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+
+        var result = await service.ResolveFortCardsPlayerAsync("epic-id", null, timeout.Token);
+
+        Assert.Equal(FortCardsPlayerResolutionStatus.Found, result.Status);
+        Assert.Equal(170, result.PlayerId);
+        Assert.Equal(1, handler.AuthCalls);
+        Assert.Equal(1, handler.ProtectedCalls);
+    }
+
+    [Fact]
+    public async Task ProfileResolutionDoesNotResumePausedReplayUploads()
+    {
+        using var folder = new TemporaryFolder();
+        var configStore = new ApiIntegrationConfigStore(Path.Combine(folder.Path, "api-config.json"));
+        var handler = new StubHttpMessageHandler((request, _) =>
+            request.Method == HttpMethod.Get
+                ? new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(PlayerPage((170, "epic-id", "Player"))),
+                }
+                : new HttpResponseMessage(HttpStatusCode.Created));
+        using var client = new HttpClient(handler);
+        using var service = CreateService(configStore, Path.Combine(folder.Path, "api-sync-queue.json"), client);
+        await service.QueueReplayAsync(CreateMatch(), WriteReplay(folder.Path));
+        service.SetLocalProcessing(true);
+        var syncTask = service.SyncNowAsync();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        var result = await service.ResolveFortCardsPlayerAsync("epic-id", null, timeout.Token);
+
+        Assert.Equal(170, result.PlayerId);
+        Assert.Equal(1, handler.AuthCalls);
+        Assert.Equal(1, handler.ProtectedCalls);
+        Assert.False(syncTask.IsCompleted);
+
+        service.SetLocalProcessing(false);
+        await syncTask.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(1, handler.AuthCalls);
+        Assert.Equal(2, handler.ProtectedCalls);
+    }
+
+    [Fact]
+    public async Task ReportCommandOpensTheResolvedProfileInTheExternalBrowser()
+    {
+        using var folder = new TemporaryFolder();
+        using var client = new HttpClient(new StubHttpMessageHandler((_, _) =>
+            throw new InvalidOperationException("The saved identity should be reused.")));
+        using var service = CreateService(new ApiIntegrationConfigStore(Path.Combine(folder.Path, "api-config.json")),
+            Path.Combine(folder.Path, "api-sync-queue.json"), client);
+        string? openedUrl = null;
+        using var dashboard = CreateDashboard(folder.Path, service, url => openedUrl = url, out _);
+
+        await dashboard.OpenReportCommand.ExecuteAsync(null);
+
+        Assert.Equal("https://contadordebau.fortcards.me/jogadores/170", openedUrl);
+    }
+
+    [Fact]
+    public async Task ReportCommandReportsBrowserLaunchFailure()
+    {
+        using var folder = new TemporaryFolder();
+        using var client = new HttpClient(new StubHttpMessageHandler((_, _) =>
+            throw new InvalidOperationException("The saved identity should be reused.")));
+        using var service = CreateService(new ApiIntegrationConfigStore(Path.Combine(folder.Path, "api-config.json")),
+            Path.Combine(folder.Path, "api-sync-queue.json"), client);
+        using var dashboard = CreateDashboard(folder.Path, service,
+            _ => throw new System.ComponentModel.Win32Exception("Browser unavailable"), out var monitor);
+        var oldLogPath = ErrorLog.FilePath;
+        var logPath = Path.Combine(folder.Path, "errors.log");
+        try
+        {
+            ErrorLog.FilePath = logPath;
+
+            await dashboard.OpenReportCommand.ExecuteAsync(null);
+
+            var notice = typeof(ChestCounter.Monitor)
+                .GetField("_notice", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                .GetValue(monitor);
+            Assert.Equal(L.T("main.remote_profile_open_failed"), notice);
+            Assert.Contains("Browser unavailable", File.ReadAllText(logPath));
+        }
+        finally
+        {
+            ErrorLog.FilePath = oldLogPath;
+        }
+    }
+
+    [Fact]
+    public async Task ReportCommandOpensPlayersPageWithoutPlayerIdentity()
+    {
+        using var folder = new TemporaryFolder();
+        using var client = new HttpClient(new StubHttpMessageHandler((_, _) =>
+            throw new InvalidOperationException("No lookup should be made without an identity.")));
+        using var service = CreateService(new ApiIntegrationConfigStore(Path.Combine(folder.Path, "api-config.json")),
+            Path.Combine(folder.Path, "api-sync-queue.json"), client);
+        string? openedUrl = null;
+        using var dashboard = CreateDashboard(folder.Path, service, url => openedUrl = url, out _, hasIdentity: false);
+
+        await dashboard.OpenReportCommand.ExecuteAsync(null);
+
+        Assert.Equal(RemoteProfileUrl.PlayersUrl, openedUrl);
+    }
+
+    [Fact]
+    public async Task RemotePlayerResolutionUsesExactNameOnlyWhenEpicIdIsUnavailable()
+    {
+        using var folder = new TemporaryFolder();
+        var configStore = new ApiIntegrationConfigStore(Path.Combine(folder.Path, "api-config.json"));
+        HttpRequestMessage? lookupRequest = null;
+        var handler = new StubHttpMessageHandler((_, _) => new HttpResponseMessage(HttpStatusCode.OK))
+        {
+            ProtectedResponderAsync = (request, _) =>
+            {
+                lookupRequest = request;
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(PlayerPage(
+                        (170, "epic-player", "Exact Name & 2"),
+                        (171, "other-player", "ExactNameSimilar"))),
+                });
+            },
+        };
+        using var client = new HttpClient(handler);
+        using var service = CreateService(configStore, Path.Combine(folder.Path, "api-sync-queue.json"), client);
+
+        var result = await service.ResolveFortCardsPlayerAsync(null, "Exact Name & 2");
+
+        Assert.Equal(FortCardsPlayerResolutionStatus.Found, result.Status);
+        Assert.Equal(170, result.PlayerId);
+        Assert.Contains("name=Exact%20Name%20%26%202", lookupRequest!.RequestUri!.Query);
+        Assert.DoesNotContain("epic_id=", lookupRequest.RequestUri.Query);
+    }
+
+    [Fact]
+    public async Task RemotePlayerResolutionFallsBackToNameWhenEpicIdIsNotFound()
+    {
+        using var folder = new TemporaryFolder();
+        var configStore = new ApiIntegrationConfigStore(Path.Combine(folder.Path, "api-config.json"));
+        var handler = new StubHttpMessageHandler((request, _) => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(request.RequestUri!.Query.Contains("epic_id=")
+                ? PlayerPage()
+                : PlayerPage((170, null, "c3bola"))),
+        });
+        using var client = new HttpClient(handler);
+        using var service = CreateService(configStore, Path.Combine(folder.Path, "api-sync-queue.json"), client);
+
+        var result = await service.ResolveFortCardsPlayerAsync("missing-epic-id", "c3bola");
+
+        Assert.Equal(FortCardsPlayerResolutionStatus.Found, result.Status);
+        Assert.Equal(170, result.PlayerId);
+        Assert.Equal(2, handler.ProtectedCalls);
+    }
+
+    [Fact]
+    public async Task NameLookupRejectsAConflictingEpicId()
+    {
+        using var folder = new TemporaryFolder();
+        var handler = new StubHttpMessageHandler((request, _) => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(request.RequestUri!.Query.Contains("epic_id=")
+                ? PlayerPage() : PlayerPage((170, "other-epic-id", "c3bola"))),
+        });
+        using var client = new HttpClient(handler);
+        using var service = CreateService(new ApiIntegrationConfigStore(Path.Combine(folder.Path, "api-config.json")),
+            Path.Combine(folder.Path, "api-sync-queue.json"), client);
+
+        var result = await service.ResolveFortCardsPlayerAsync("epic-id", "c3bola");
+
+        Assert.Equal(FortCardsPlayerResolutionStatus.Ambiguous, result.Status);
+    }
+
+    [Fact]
+    public async Task RemotePlayerResolutionRejectsAmbiguousNamesAndInvalidResponses()
+    {
+        using var folder = new TemporaryFolder();
+        var configStore = new ApiIntegrationConfigStore(Path.Combine(folder.Path, "api-config.json"));
+        var responseBody = PlayerPage(
+            (170, "first-epic-id", "SameName"),
+            (171, "second-epic-id", "SameName"));
+        var handler = new StubHttpMessageHandler((_, _) => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(responseBody),
+        });
+        using var client = new HttpClient(handler);
+        using var service = CreateService(configStore, Path.Combine(folder.Path, "api-sync-queue.json"), client);
+
+        var ambiguous = await service.ResolveFortCardsPlayerAsync(null, "SameName");
+        Assert.Equal(FortCardsPlayerResolutionStatus.Ambiguous, ambiguous.Status);
+
+        handler.ProtectedResponderAsync = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("""{"success":true,"data":[]}"""),
+        });
+        var invalid = await service.ResolveFortCardsPlayerAsync(null, "SameName");
+        Assert.Equal(FortCardsPlayerResolutionStatus.Unavailable, invalid.Status);
+    }
+
+    [Fact]
+    public async Task RemotePlayerResolutionTreatsApiFailureAsUnavailable()
+    {
+        using var folder = new TemporaryFolder();
+        var configStore = new ApiIntegrationConfigStore(Path.Combine(folder.Path, "api-config.json"));
+        var handler = new StubHttpMessageHandler((_, _) => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+        using var client = new HttpClient(handler);
+        using var service = CreateService(configStore, Path.Combine(folder.Path, "api-sync-queue.json"), client);
+
+        var result = await service.ResolveFortCardsPlayerAsync("epic-id", null);
+
+        Assert.Equal(FortCardsPlayerResolutionStatus.Unavailable, result.Status);
+    }
+
+    [Fact]
+    public async Task ReportCommandResolvesC3bolaByNameAndOpensGlobalId()
+    {
+        using var folder = new TemporaryFolder();
+        var requests = new List<string>();
+        var handler = new StubHttpMessageHandler((request, _) =>
+        {
+            requests.Add(request.RequestUri!.Query);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(request.RequestUri.Query.Contains("epic_id=")
+                    ? PlayerPage() : PlayerPage((170, null, "c3bola"))),
+            };
+        });
+        using var client = new HttpClient(handler);
+        using var service = CreateService(new ApiIntegrationConfigStore(Path.Combine(folder.Path, "api-config.json")),
+            Path.Combine(folder.Path, "api-sync-queue.json"), client);
+        string? openedUrl = null;
+        using var dashboard = CreateDashboard(folder.Path, service, url => openedUrl = url, out var monitor,
+            hasCachedIdentity: false, playerName: "c3bola");
+
+        await dashboard.OpenReportCommand.ExecuteAsync(null);
+
+        Assert.Equal("https://contadordebau.fortcards.me/jogadores/170", openedUrl);
+        Assert.Equal(170, monitor.GetFortCardsPlayerIdentity("epic:EPIC-ID")!.PlayerId);
+        Assert.Contains(requests, query => query.Contains("epic_id=epic-id"));
+        Assert.Contains(requests, query => query.Contains("name=c3bola"));
+    }
+
+    [Theory]
+    [InlineData("not-found")]
+    [InlineData("unavailable")]
+    [InlineData("timeout")]
+    [InlineData("ambiguous")]
+    public async Task ReportCommandOpensPlayersPageWhenIdentityCannotBeResolved(string scenario)
+    {
+        using var folder = new TemporaryFolder();
+        var handler = new StubHttpMessageHandler((request, _) =>
+        {
+            if (scenario == "unavailable")
+            {
+                return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+            }
+            if (request.RequestUri!.AbsolutePath.EndsWith("/analytics/screens/search", StringComparison.Ordinal))
+            {
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(SearchPage()) };
+            }
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(scenario == "ambiguous"
+                    ? PlayerPage((1, null, "c3bola"), (2, null, "c3bola"))
+                    : PlayerPage()),
+            };
+        });
+        if (scenario == "timeout")
+        {
+            handler.ProtectedResponderAsync = async (_, ct) =>
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+                throw new InvalidOperationException("The timeout should cancel the request.");
+            };
+        }
+        using var client = new HttpClient(handler) { Timeout = TimeSpan.FromMilliseconds(100) };
+        using var service = CreateService(new ApiIntegrationConfigStore(Path.Combine(folder.Path, "api-config.json")),
+            Path.Combine(folder.Path, "api-sync-queue.json"), client);
+        string? openedUrl = null;
+        using var dashboard = CreateDashboard(folder.Path, service, url => openedUrl = url, out _,
+            hasCachedIdentity: false, playerName: "c3bola", epicId: null);
+
+        await dashboard.OpenReportCommand.ExecuteAsync(null);
+
+        Assert.Equal(RemoteProfileUrl.PlayersUrl, openedUrl);
+    }
+
+    [Fact]
+    public async Task PublicSearchUsesUniqueExactNameWithoutAuthentication()
+    {
+        using var folder = new TemporaryFolder();
+        var handler = new StubHttpMessageHandler((request, _) =>
+        {
+            if (request.RequestUri!.AbsolutePath.EndsWith("/analytics/screens/search", StringComparison.Ordinal))
+            {
+                Assert.Null(request.Headers.Authorization);
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(SearchPage((170, "c3bola"), (171, "c3bola-extra"))),
+                };
+            }
+            return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+        });
+        using var client = new HttpClient(handler);
+        using var service = CreateService(new ApiIntegrationConfigStore(Path.Combine(folder.Path, "api-config.json")),
+            Path.Combine(folder.Path, "api-sync-queue.json"), client);
+
+        var result = await service.ResolveFortCardsPlayerAsync(null, "c3bola");
+
+        Assert.Equal(FortCardsPlayerResolutionStatus.Found, result.Status);
+        Assert.Equal(170, result.PlayerId);
+    }
+
+    [Fact]
+    public async Task PublicSearchDoesNotUseConflictingEpicIdentity()
+    {
+        using var folder = new TemporaryFolder();
+        var handler = new StubHttpMessageHandler((request, _) =>
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            var body = path.EndsWith("/analytics/screens/search", StringComparison.Ordinal)
+                ? SearchPage((170, "c3bola"))
+                : path.EndsWith("/analytics/players/170/summary", StringComparison.Ordinal)
+                    ? """{"success":true,"data":{"player_id":170,"epic_id":"different-epic"}}"""
+                    : PlayerPage();
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) };
+        });
+        using var client = new HttpClient(handler);
+        using var service = CreateService(new ApiIntegrationConfigStore(Path.Combine(folder.Path, "api-config.json")),
+            Path.Combine(folder.Path, "api-sync-queue.json"), client);
+
+        var result = await service.ResolveFortCardsPlayerAsync("epic-id", "c3bola");
+
+        Assert.Equal(FortCardsPlayerResolutionStatus.Ambiguous, result.Status);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PublicSearchRejectsAmbiguousOrIncompleteResults(bool incomplete)
+    {
+        using var folder = new TemporaryFolder();
+        var handler = new StubHttpMessageHandler((request, _) =>
+        {
+            var body = incomplete
+                ? """{"success":true,"data":{"items":[{"player_id":170,"display_name":"c3bola"}],"total":101,"page":1,"page_size":100}}"""
+                : SearchPage((170, "c3bola"), (171, "c3bola"));
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(request.RequestUri!.AbsolutePath.EndsWith("/analytics/screens/search", StringComparison.Ordinal)
+                    ? body : PlayerPage()),
+            };
+        });
+        using var client = new HttpClient(handler);
+        using var service = CreateService(new ApiIntegrationConfigStore(Path.Combine(folder.Path, "api-config.json")),
+            Path.Combine(folder.Path, "api-sync-queue.json"), client);
+
+        var result = await service.ResolveFortCardsPlayerAsync(null, "c3bola");
+
+        Assert.Equal(FortCardsPlayerResolutionStatus.Ambiguous, result.Status);
+    }
+
+    [Fact]
+    public async Task RemotePlayerResolutionTreatsTimeoutAsUnavailable()
+    {
+        using var folder = new TemporaryFolder();
+        var handler = new StubHttpMessageHandler((_, _) => throw new InvalidOperationException())
+        {
+            ProtectedResponderAsync = async (_, ct) =>
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+                throw new InvalidOperationException("The timeout should cancel the request.");
+            },
+        };
+        using var client = new HttpClient(handler) { Timeout = TimeSpan.FromMilliseconds(100) };
+        using var service = CreateService(new ApiIntegrationConfigStore(Path.Combine(folder.Path, "api-config.json")),
+            Path.Combine(folder.Path, "api-sync-queue.json"), client);
+
+        var result = await service.ResolveFortCardsPlayerAsync(null, "c3bola");
+
+        Assert.Equal(FortCardsPlayerResolutionStatus.Unavailable, result.Status);
+    }
+
+    [Fact]
+    public async Task TemporaryApiFailureDoesNotEraseCachedIdentity()
+    {
+        using var folder = new TemporaryFolder();
+        var handler = new StubHttpMessageHandler((_, _) => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
+        using var client = new HttpClient(handler);
+        using var service = CreateService(new ApiIntegrationConfigStore(Path.Combine(folder.Path, "api-config.json")),
+            Path.Combine(folder.Path, "api-sync-queue.json"), client);
+        string? openedUrl = null;
+        using var dashboard = CreateDashboard(folder.Path, service, url => openedUrl = url, out var monitor,
+            cachedAt: DateTimeOffset.UtcNow.AddDays(-2));
+
+        await dashboard.OpenReportCommand.ExecuteAsync(null);
+        var task = (Task?)typeof(DashboardViewModel)
+            .GetField("_remoteProfileResolutionTask", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(dashboard);
+        if (task != null)
+        {
+            await task;
+        }
+
+        Assert.Equal("https://contadordebau.fortcards.me/jogadores/170", openedUrl);
+        Assert.Equal(170, monitor.GetFortCardsPlayerIdentity("epic:EPIC-ID")!.PlayerId);
+    }
+
+    [Fact]
+    public async Task CachedIdentityIsUpdatedWhenLookupFindsANewGlobalId()
+    {
+        using var folder = new TemporaryFolder();
+        var response = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handler = new StubHttpMessageHandler((_, _) => throw new InvalidOperationException())
+        {
+            ProtectedResponderAsync = (_, _) => response.Task,
+        };
+        using var client = new HttpClient(handler);
+        using var service = CreateService(new ApiIntegrationConfigStore(Path.Combine(folder.Path, "api-config.json")),
+            Path.Combine(folder.Path, "api-sync-queue.json"), client);
+        string? openedUrl = null;
+        using var dashboard = CreateDashboard(folder.Path, service, url => openedUrl = url, out var monitor,
+            cachedAt: DateTimeOffset.UtcNow.AddDays(-2));
+
+        await dashboard.OpenReportCommand.ExecuteAsync(null);
+        var refresh = (Task)typeof(DashboardViewModel)
+            .GetField("_remoteProfileResolutionTask", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .GetValue(dashboard)!;
+        Assert.Equal("https://contadordebau.fortcards.me/jogadores/170", openedUrl);
+        response.SetResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(PlayerPage((171, "epic-id", "Player"))),
+        });
+        await refresh;
+
+        Assert.Equal(171, monitor.GetFortCardsPlayerIdentity("epic:EPIC-ID")!.PlayerId);
+    }
+
+    [Fact]
+    public void FortCardsIdentityPersistencePreservesLegacySettingsAndDropsManualProfileFields()
+    {
+        using var folder = new TemporaryFolder();
+        var store = new Store(folder.Path);
+        File.WriteAllText(store.ConfigPath, """
+        {
+          "RemoteProfileId": "170",
+          "RemoteProfileSkinId": "legacy-skin",
+          "StartWithFortnite": true,
+          "OpenReportAtStartup": true,
+          "DemosFolder": "replays"
+        }
+        """);
+
+        var config = store.LoadConfig()!;
+        Assert.True(config.StartWithFortnite);
+        Assert.True(config.OpenReportOnStart);
+        Assert.Equal("replays", config.DemosFolder);
+        Assert.Empty(config.FortCardsPlayerIdentities);
+
+        config.FortCardsPlayerIdentities["epic:0123456789ABCDEF0123456789ABCDEF"] =
+            new FortCardsPlayerIdentity(170, DateTimeOffset.UtcNow);
+        store.SaveConfig(config);
+        var persisted = store.LoadConfig()!;
+        Assert.Equal(170, persisted.FortCardsPlayerIdentities["epic:0123456789ABCDEF0123456789ABCDEF"].PlayerId);
+        var savedJson = File.ReadAllText(store.ConfigPath);
+        Assert.DoesNotContain("RemoteProfileId", savedJson);
+        Assert.DoesNotContain("RemoteProfileSkinId", savedJson);
+    }
+
+    [Fact]
+    public void ConfirmedMigrationClearsLegacyRawDataAndCreatesBackup()
+    {
+        using var folder = new TemporaryFolder();
+        var store = new Store(folder.Path);
+        var hash = new string('a', 64);
+        var data = new TrackerData
+        {
+            Matches =
+            [
+                new MatchRecord
+                {
+                    SessionId = "legacy",
+                    ReplayFileSha256 = hash,
+                    RawReplayData = CreateRawSnapshot(),
+                },
+            ],
+        };
+        store.SaveData(data);
+
+        var migrated = store.MigrateConfirmedRawReplayData(data, [hash]);
+
+        Assert.Equal(1, migrated);
+        Assert.Null(Assert.Single(store.LoadData().Matches).RawReplayData);
+        Assert.True(Assert.Single(data.Matches).IsSynced);
+        Assert.True(Directory.EnumerateFiles(folder.Path, "data.json.pre-raw-migration-*").Any());
+    }
+
+    [Fact]
+    public void FailedReplayRegistryPersistsWithoutReplayBytes()
+    {
+        using var folder = new TemporaryFolder();
+        var store = new Store(folder.Path);
+        var failure = new FailedReplay
+        {
+            ReplayFileName = "broken.replay",
+            ReplayHash = new string('b', 64),
+            FilePath = Path.Combine(folder.Path, "broken.replay"),
+            FileSizeBytes = 1234,
+            FailureStage = "analysis",
+            ErrorType = "InvalidDataException",
+            ErrorMessage = "Corrupt replay",
+            Attempts = 2,
+            AnalyzerVersion = "15",
+            ApplicationVersion = "3.3.4",
+        };
+
+        store.SaveFailedReplays([failure]);
+        var loaded = store.LoadFailedReplays();
+
+        var saved = Assert.Single(loaded);
+        Assert.Equal("broken.replay", saved.ReplayFileName);
+        Assert.Equal(2, saved.Attempts);
+        Assert.DoesNotContain("ReplayBytes", File.ReadAllText(store.FailedReplaysPath));
+    }
+
+    [Fact]
     public void HistoricalQueueWriteFailureDoesNotInterruptLocalHistory()
     {
         using var folder = new TemporaryFolder();
@@ -323,6 +890,11 @@ public sealed class ApiSyncServiceTests
         using var restarted = CreateService(configStore, queuePath, restartedClient);
         Assert.Equal(0, restarted.State.Pending);
         Assert.Equal(0, restarted.State.Failed);
+
+        using var queueDocument = JsonDocument.Parse(File.ReadAllText(queuePath));
+        Assert.Equal(1, queueDocument.RootElement.GetArrayLength());
+        Assert.False(queueDocument.RootElement[0].GetProperty("request").TryGetProperty("data", out var data)
+                   && data.ValueKind != JsonValueKind.Null);
     }
 
     [Fact]
@@ -848,6 +1420,74 @@ public sealed class ApiSyncServiceTests
 
     private static ApiSyncService CreateService(ApiIntegrationConfigStore store, string queuePath, HttpClient client) =>
         new(store, queuePath, client, mockAuthEndpointAuthorized: true);
+
+    private static DashboardViewModel CreateDashboard(
+        string folder,
+        ApiSyncService apiSync,
+        Action<string> openExternalLink,
+        out ChestCounter.Monitor monitor,
+        bool hasIdentity = true,
+        bool hasCachedIdentity = true,
+        string? playerName = "Player",
+        string? epicId = "epic-id",
+        DateTimeOffset? cachedAt = null)
+    {
+        var store = new Store(folder);
+        var config = new Config();
+        if (hasCachedIdentity)
+        {
+            config.FortCardsPlayerIdentities["epic:EPIC-ID"] = new FortCardsPlayerIdentity(170, cachedAt ?? DateTimeOffset.UtcNow);
+        }
+        var data = new TrackerData();
+        var tracker = new Tracker(store, config, data);
+        var services = new MonitorServices();
+        var dependencies = new MonitorDependencies(services, services, services, services, services, services);
+        monitor = new ChestCounter.Monitor(store, config, data, tracker, folder,
+            new NativeOverlayHost(Path.Combine(folder, "overlay.png")), dependencies);
+        var runtime = new RuntimeContext(monitor, store, tracker, apiSync, false, Array.Empty<FileInfo>());
+        var dashboard = new DashboardViewModel(runtime, openExternalLink);
+        var overlay = OverlayModel.Build(data, null, false, DateTime.UtcNow);
+        var state = new MonitorState(overlay, Array.Empty<Profile>(), "epic-id", null, null, false, ChestStats.Empty)
+        {
+            CurrentEpicId = hasIdentity ? epicId : null,
+            CurrentPlayerName = hasIdentity ? playerName : null,
+        };
+        typeof(DashboardViewModel)
+            .GetField("_state", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(dashboard, state);
+        return dashboard;
+    }
+
+    private static string PlayerPage(params (long Id, string? EpicId, string? Name)[] players) =>
+        JsonSerializer.Serialize(new
+        {
+            success = true,
+            data = players.Select(player => new
+            {
+                id = player.Id,
+                epic_id = player.EpicId,
+                bot_id = (string?)null,
+                platform_unique_net_id = (string?)null,
+                latest_player_name = player.Name,
+                created_at = "2026-11-24T00:00:00Z",
+                updated_at = "2026-11-24T00:00:00Z",
+            }),
+            pagination = new { page = 1, page_size = 100, total = players.Length, total_pages = players.Length == 0 ? 0 : 1 },
+        });
+
+    private static string SearchPage(params (long Id, string Name)[] players) =>
+        JsonSerializer.Serialize(new
+        {
+            success = true,
+            data = new
+            {
+                totals = new { },
+                items = players.Select(player => new { player_id = player.Id, display_name = player.Name }),
+                total = players.Length,
+                page = 1,
+                page_size = 100,
+            },
+        });
 
     private static ApiAuthService CreateAuth(HttpClient client, out Func<DateTimeOffset> clock, Func<DateTimeOffset>? now = null)
     {

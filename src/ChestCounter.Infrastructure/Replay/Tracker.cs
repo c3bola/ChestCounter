@@ -1,5 +1,6 @@
 using System.Text;
 using System.Security.Cryptography;
+using System.Runtime.InteropServices;
 
 namespace ChestCounter;
 
@@ -21,6 +22,8 @@ public sealed class Tracker : IMonitorTracking
     private readonly Config _config;
     private readonly TrackerData _data;
     private readonly Dictionary<string, long> _lastSeenSize = new();
+    private readonly SemaphoreSlim _analysisGate = new(1, 1);
+    private readonly List<FailedReplay> _failedReplays;
     private LocalReplayProgress? _lastProgress;
     private int _batchNumber;
 
@@ -29,6 +32,7 @@ public sealed class Tracker : IMonitorTracking
         _store = store;
         _config = config;
         _data = data;
+        _failedReplays = _store.LoadFailedReplays();
 
         // Antes de la versión 1.1, las partidas de otras cuentas se rechazaban (valor antiguo "autre joueur"): ahora tienen su propio perfil.
         foreach (var key in _data.ProcessedFiles.Where(kv => kv.Value.StartsWith("autre joueur", StringComparison.Ordinal)).Select(kv => kv.Key).ToList())
@@ -44,6 +48,7 @@ public sealed class Tracker : IMonitorTracking
     }
 
     public TrackerData Data => _data;
+    public IReadOnlyList<FailedReplay> FailedReplays => _failedReplays;
 
     public event Action<MatchRecord, FileInfo>? MatchPersisted;
     public event Action? ReplayProcessed;
@@ -54,14 +59,6 @@ public sealed class Tracker : IMonitorTracking
 
     /// <summary>True when a match has just ended and its replay is about to be read: check again within seconds.</summary>
     public bool IsFinishing { get; private set; }
-
-    /// <summary>Devuelve a Windows la memoria usada por el análisis (la herramienta en reposo ocupa unos pocos MB).</summary>
-    private static void ReleaseMemory()
-    {
-        System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
-        GC.Collect(GC.MaxGeneration, GCCollectionMode.Aggressive, blocking: true, compacting: true);
-        GC.WaitForPendingFinalizers();
-    }
 
     public static string FileKey(FileInfo f) => $"{f.Name}|{f.Length}|{f.LastWriteTimeUtc.Ticks}";
 
@@ -107,6 +104,170 @@ public sealed class Tracker : IMonitorTracking
             _data.ProcessedFiles[FileKey(f)] = "skipped";
         }
         _store.SaveData(_data);
+    }
+
+    private void RegisterFailedReplay(FileInfo file, Exception exception)
+    {
+        string hash = "";
+        try
+        {
+            using var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+            hash = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+        }
+        catch
+        {
+            // Keep the failure registry usable even if the file becomes unavailable.
+        }
+
+        var now = DateTime.UtcNow;
+        var existing = _failedReplays.FirstOrDefault(failure =>
+            string.Equals(failure.FilePath, file.FullName, StringComparison.OrdinalIgnoreCase)
+            || (!string.IsNullOrEmpty(failure.ReplayHash) && string.Equals(failure.ReplayHash, hash, StringComparison.OrdinalIgnoreCase)));
+        if (existing == null)
+        {
+            existing = new FailedReplay
+            {
+                ReplayFileName = file.Name,
+                ReplayHash = hash,
+                FilePath = file.FullName,
+                FileSizeBytes = file.Exists ? file.Length : 0,
+                FailedAtUtc = now,
+                FailureStage = "analysis",
+                Attempts = 1,
+                AnalyzerVersion = ReplayAnalyzer.CurrentVersion.ToString(),
+                ApplicationVersion = AppInfo.VersionText,
+            };
+            _failedReplays.Add(existing);
+        }
+        else
+        {
+            existing.Attempts++;
+            existing.FailedAtUtc = now;
+            existing.FileSizeBytes = file.Exists ? file.Length : existing.FileSizeBytes;
+        }
+
+        existing.ErrorType = exception.GetType().FullName ?? exception.GetType().Name;
+        existing.ErrorMessage = exception.Message;
+        existing.StackTrace = exception.StackTrace;
+        existing.History.Add(new FailedReplayAttempt
+        {
+            AttemptedAtUtc = now,
+            Result = "failed",
+            ErrorType = existing.ErrorType,
+            ErrorMessage = existing.ErrorMessage,
+            StackTrace = existing.StackTrace,
+        });
+        if (existing.History.Count > 20)
+        {
+            existing.History.RemoveRange(0, existing.History.Count - 20);
+        }
+        _store.SaveFailedReplays(_failedReplays);
+    }
+
+    public IReadOnlyList<FailedReplay> ReadFailedReplays()
+    {
+        var remaining = new List<FailedReplay>();
+        foreach (var failure in _failedReplays.ToArray())
+        {
+            var file = new FileInfo(failure.FilePath);
+            if (!file.Exists)
+            {
+                failure.Attempts++;
+                failure.History.Add(new FailedReplayAttempt
+                {
+                    AttemptedAtUtc = DateTime.UtcNow,
+                    Result = "missing",
+                    ErrorType = nameof(FileNotFoundException),
+                    ErrorMessage = "The original replay file no longer exists.",
+                });
+                remaining.Add(failure);
+                continue;
+            }
+
+            try
+            {
+                var key = FileKey(file);
+                var outcome = Process(file);
+                if (outcome.Match != null)
+                {
+                    _data.ProcessedFiles[key] = outcome.Match?.SessionId ?? "skipped";
+                    _store.SaveData(_data);
+                    continue;
+                }
+                if (outcome.Skipped != null)
+                {
+                    _data.ProcessedFiles[key] = "skipped";
+                    _store.SaveData(_data);
+                    continue;
+                }
+                failure.Attempts++;
+                failure.FailedAtUtc = DateTime.UtcNow;
+                failure.ErrorType = "ReplayAnalysisException";
+                failure.ErrorMessage = "Replay analysis failed.";
+                failure.History.Add(new FailedReplayAttempt
+                {
+                    AttemptedAtUtc = DateTime.UtcNow,
+                    Result = "failed",
+                    ErrorType = failure.ErrorType,
+                    ErrorMessage = failure.ErrorMessage,
+                });
+                remaining.Add(failure);
+            }
+            catch (Exception ex)
+            {
+                failure.Attempts++;
+                failure.FailedAtUtc = DateTime.UtcNow;
+                failure.FailureStage = "analysis";
+                failure.ErrorType = ex.GetType().FullName ?? ex.GetType().Name;
+                failure.ErrorMessage = ex.Message;
+                failure.StackTrace = ex.StackTrace;
+                failure.History.Add(new FailedReplayAttempt
+                {
+                    AttemptedAtUtc = DateTime.UtcNow,
+                    Result = "failed",
+                    ErrorType = failure.ErrorType,
+                    ErrorMessage = failure.ErrorMessage,
+                    StackTrace = failure.StackTrace,
+                });
+                remaining.Add(failure);
+            }
+        }
+
+        _failedReplays.Clear();
+        _failedReplays.AddRange(remaining);
+        _store.SaveFailedReplays(_failedReplays);
+        return _failedReplays;
+    }
+
+    public string CopyReplayDiagnosticLog(FailedReplay failure)
+    {
+        var fileExists = File.Exists(failure.FilePath);
+        var file = fileExists ? new FileInfo(failure.FilePath) : null;
+        var history = string.Join(Environment.NewLine,
+            failure.History.TakeLast(10).Select(attempt =>
+                $"- {attempt.AttemptedAtUtc:O} | {attempt.Result} | {attempt.ErrorType} | {attempt.ErrorMessage}"));
+
+        return new StringBuilder()
+            .AppendLine("ChestCounter Replay Diagnostic")
+            .AppendLine($"ApplicationVersion: {AppInfo.VersionText}")
+            .AppendLine($"AnalyzerVersion: {failure.AnalyzerVersion}")
+            .AppendLine($"OS: {RuntimeInformation.OSDescription}")
+            .AppendLine($"Architecture: {RuntimeInformation.OSArchitecture}")
+            .AppendLine($"ReplayFileName: {failure.ReplayFileName}")
+            .AppendLine($"ReplayHash: {failure.ReplayHash}")
+            .AppendLine($"ReplayFileSize: {(file?.Length ?? failure.FileSizeBytes)}")
+            .AppendLine($"ReplayFileExists: {fileExists}")
+            .AppendLine($"FailureTimestampUtc: {failure.FailedAtUtc:O}")
+            .AppendLine($"FailureStage: {failure.FailureStage}")
+            .AppendLine($"ExceptionType: {failure.ErrorType}")
+            .AppendLine($"ExceptionMessage: {failure.ErrorMessage}")
+            .AppendLine($"StackTrace: {failure.StackTrace}")
+            .AppendLine($"RetryCount: {failure.Attempts}")
+            .AppendLine("PreviousAttempts:")
+            .AppendLine(string.IsNullOrWhiteSpace(history) ? "(none)" : history)
+            .AppendLine($"ManagedHeapBytes: {GC.GetTotalMemory(false)}")
+            .ToString();
     }
 
     /// <summary>Result of the analysis of one replay.</summary>
@@ -316,6 +477,7 @@ public sealed class Tracker : IMonitorTracking
         {
             ErrorLog.Write($"Unreadable replay: {file.FullName} ({file.Length} bytes, {file.LastWriteTime:yyyy-MM-dd HH:mm:ss})", ex);
             _data.ProcessedFiles[key] = "error";
+            RegisterFailedReplay(file, ex);
             _store.SaveData(_data);
             return new Outcome(Error: file.Name);
         }
@@ -488,18 +650,29 @@ public sealed class Tracker : IMonitorTracking
             fs.ReadExactly(bytes);
         }
 
+        if (!_analysisGate.Wait(timeout))
+        {
+            throw new TimeoutException(L.T("tracker.analysis_took_too_long"));
+        }
+
         MatchRecord? result = null;
         Exception? failure = null;
+        var workerBytes = bytes;
         var worker = new Thread(() =>
         {
             try
             {
                 // The replays saved on a PC are those of its player: the replay owner is tracked (one profile per account).
-                result = new ReplayAnalyzer().Analyze(bytes.AsMemory(), file.Name, "");
+                result = new ReplayAnalyzer().Analyze(workerBytes.AsMemory(), file.Name, "");
             }
             catch (Exception e)
             {
                 failure = e;
+            }
+            finally
+            {
+                workerBytes = Array.Empty<byte>();
+                _analysisGate.Release();
             }
         })
         {
@@ -507,14 +680,22 @@ public sealed class Tracker : IMonitorTracking
             Priority = ThreadPriority.Lowest,
             Name = "ReplayAnalysis",
         };
-        worker.Start();
+        try
+        {
+            worker.Start();
+        }
+        catch
+        {
+            workerBytes = Array.Empty<byte>();
+            _analysisGate.Release();
+            throw;
+        }
         if (!worker.Join(timeout))
         {
             throw new TimeoutException(L.T("tracker.analysis_took_too_long"));
         }
         var fileSha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
         bytes = Array.Empty<byte>();
-        ReleaseMemory();
         if (failure != null)
         {
             System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failure).Throw(); // keep the original stack

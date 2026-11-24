@@ -103,7 +103,6 @@ internal static class Program
             var (png, _) = visual.RenderState(overlay);
             File.WriteAllBytes(Path.Combine(dataDir, "overlay.png"), png);
             tracker.PrintSummary();
-            Console.WriteLine(L.F("startup.report", store.ReportPath));
             return 0;
         }
 
@@ -124,6 +123,30 @@ internal static class Program
         var apiConfigStore = new ApiIntegrationConfigStore(Path.Combine(dataDir, "api-config.json"));
         _ = apiConfigStore.Load();
         var apiSync = new ApiSyncService(apiConfigStore, Path.Combine(dataDir, "api-sync-queue.json"));
+        var migratedRawSnapshots = store.MigrateConfirmedRawReplayData(data, apiSync.SynchronizedHashes);
+        if (migratedRawSnapshots > 0)
+        {
+            Console.WriteLine($"Migrated {migratedRawSnapshots} confirmed replay snapshot(s) to local lightweight history.");
+        }
+        apiSync.ReplaySynchronized += hash =>
+        {
+            var changed = false;
+            foreach (var match in data.Matches.Where(match =>
+                         match.ReplayFileSha256 != null
+                         && match.ReplayFileSha256.Equals(hash, StringComparison.OrdinalIgnoreCase)))
+            {
+                match.IsSynced = true;
+                if (match.RawReplayData != null)
+                {
+                    match.RawReplayData = null;
+                    changed = true;
+                }
+            }
+            if (changed)
+            {
+                store.SaveData(data);
+            }
+        };
         apiSync.SetLocalProcessing(true);
         apiSync.Start();
 

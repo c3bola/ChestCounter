@@ -101,10 +101,8 @@ public static class ReportWriter
         try
         {
             var view = Profiles.View(data, config);
-            WriteAtomic(store.ReportPath, Report(config, view, Profiles.List(data, config),Profiles.InitialChests(data, config)));
             WriteAtomic(store.OverlayPath, Overlay(OverlayModel.Build(
                 view, null, false, SessionStartUtc, Profiles.InitialChests(data, config)), config.OverlayScalePercent));
-            WriteAtomic(store.CsvPath, Csv(data));
         }
         catch (Exception ex)
         {
