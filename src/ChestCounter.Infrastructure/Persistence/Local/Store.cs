@@ -187,6 +187,36 @@ public sealed class Store : IMonitorStorage
         return migrated.Count;
     }
 
+    /// <summary>
+    /// Removes raw snapshots from match history after they have been durably copied to the API outbox.
+    /// Pending snapshots remain available for retry in the outbox until synchronization is confirmed.
+    /// </summary>
+    public int MigrateQueuedRawReplayData(TrackerData data, IReadOnlyCollection<string> queuedHashes)
+    {
+        if (queuedHashes.Count == 0)
+        {
+            return 0;
+        }
+
+        var hashes = queuedHashes.Where(hash => hash.Length == 64)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var migrated = data.Matches.Where(match =>
+            match.RawReplayData != null
+            && match.ReplayFileSha256 != null
+            && hashes.Contains(match.ReplayFileSha256)).ToList();
+        if (migrated.Count == 0)
+        {
+            return 0;
+        }
+
+        foreach (var match in migrated)
+        {
+            match.RawReplayData = null;
+        }
+        SaveData(data);
+        return migrated.Count;
+    }
+
     private static T? Load<T>(string path) where T : class
     {
         if (!File.Exists(path))
@@ -196,7 +226,8 @@ public sealed class Store : IMonitorStorage
 
         try
         {
-            return JsonSerializer.Deserialize<T>(File.ReadAllText(path), Json);
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            return JsonSerializer.Deserialize<T>(stream, Json);
         }
         catch (Exception ex)
         {
@@ -210,7 +241,10 @@ public sealed class Store : IMonitorStorage
     private static void Save<T>(string path, T value)
     {
         var tmp = path + ".tmp";
-        File.WriteAllText(tmp, JsonSerializer.Serialize(value, Json));
+        using (var stream = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            JsonSerializer.Serialize(stream, value, Json);
+        }
         File.Move(tmp, path, overwrite: true);
     }
 }

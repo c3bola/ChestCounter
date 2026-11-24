@@ -45,6 +45,7 @@ public sealed class ApiSyncService : IDisposable
 
     private readonly ApiIntegrationConfigStore _configStore;
     private readonly string _queuePath;
+    private readonly string _payloadFolder;
     private readonly string _diagnosticsLogPath;
     private readonly HttpClient _httpClient;
     private readonly bool _ownsHttpClient;
@@ -83,6 +84,7 @@ public sealed class ApiSyncService : IDisposable
     {
         _configStore = configStore;
         _queuePath = queuePath;
+        _payloadFolder = Path.Combine(Path.GetDirectoryName(queuePath)!, "api-sync-payloads");
         _diagnosticsLogPath = Path.Combine(Path.GetDirectoryName(queuePath)!, "api-sync.log");
         _httpClient = httpClient ?? new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
         _ownsHttpClient = httpClient == null;
@@ -97,8 +99,12 @@ public sealed class ApiSyncService : IDisposable
         {
             _queue = LoadQueue();
             var recovered = false;
-            foreach (var item in _queue.Where(item => item.State == "synchronized" && item.Request?.Data != null))
+            foreach (var item in _queue.Where(item => item.Request?.Data != null))
             {
+                if (item.State != "synchronized")
+                {
+                    SavePayload(item.Request!.IdempotencyKey, item.Request.Data!);
+                }
                 item.Request = item.Request with { Data = null };
                 recovered = true;
             }
@@ -109,8 +115,10 @@ public sealed class ApiSyncService : IDisposable
                 recovered = true;
             }
             foreach (var item in _queue.Where(item =>
-                         item.Request?.Data == null
-                         && (item.State is "pending" or "failed")))
+                         item.Request != null
+                         && item.Request.Data == null
+                         && (item.State is "pending" or "failed")
+                         && !File.Exists(PayloadPath(item.Request.IdempotencyKey))))
             {
                 item.State = "blocked";
                 item.NextAttemptUtc = null;
@@ -483,24 +491,34 @@ public sealed class ApiSyncService : IDisposable
 
     public void QueueReplay(MatchRecord match, FileInfo replayFile)
     {
+        if (TryQueueReplay(match, replayFile))
+        {
+            match.RawReplayData = null;
+        }
+    }
+
+    public bool TryQueueReplay(MatchRecord match, FileInfo replayFile)
+    {
         if (match.ReplayFileSha256 is { Length: 64 } fileSha256)
         {
             try
             {
-                AddToQueue(CreateSnapshot(match, replayFile.Name, fileSha256, match.ReplayFileSizeBytes,
+                var queued = AddToQueue(CreateSnapshot(match, replayFile.Name, fileSha256, match.ReplayFileSizeBytes,
                     match.ReplayFileCreatedAtUtc is { } createdAt
                         ? new DateTimeOffset(DateTime.SpecifyKind(createdAt, DateTimeKind.Utc))
                         : null));
+                return queued;
             }
             catch (Exception ex)
             {
                 ErrorLog.Write($"Queue replay for API synchronization ({replayFile.Name})", ex);
                 SetStatus("A replay was saved locally but could not be added to the API synchronization queue.");
+                return false;
             }
-            return;
         }
 
         _ = EnqueueSafelyAsync(match, replayFile);
+        return false;
     }
 
     public async Task QueueReplayAsync(
@@ -512,11 +530,11 @@ public sealed class ApiSyncService : IDisposable
         await EnqueueAsync(match, replayFile, cancellationToken).ConfigureAwait(false);
     }
 
-    public void QueueHistorical(TrackerData data, IEnumerable<FileInfo> replayFiles)
+    public bool QueueHistorical(TrackerData data, IEnumerable<FileInfo> replayFiles)
     {
         if (_queueLoadError != null)
         {
-            return;
+            return false;
         }
 
         var filesByKey = replayFiles.ToDictionary(Tracker.FileKey, StringComparer.OrdinalIgnoreCase);
@@ -537,6 +555,7 @@ public sealed class ApiSyncService : IDisposable
         var snapshots = new List<ReplayIngestionSnapshot>();
         var filesToHash = new List<(MatchRecord Match, FileInfo File)>();
         var matchesWithoutSnapshots = 0;
+        var allSnapshotsPrepared = true;
         foreach (var match in data.Matches)
         {
             if (match.RawReplayData == null)
@@ -562,6 +581,7 @@ public sealed class ApiSyncService : IDisposable
                 }
                 catch (Exception ex)
                 {
+                    allSnapshotsPrepared = false;
                     ErrorLog.Write($"Queue historical replay for API synchronization ({match.ReplayFile})", ex);
                 }
             }
@@ -572,13 +592,13 @@ public sealed class ApiSyncService : IDisposable
         }
         try
         {
-            AddToQueue(snapshots);
+            allSnapshotsPrepared &= AddToQueue(snapshots);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             ErrorLog.Write("Queue historical replays for API synchronization", ex);
             SetStatus("Historical replay data remains local but could not be added to the API synchronization queue.");
-            return;
+            return false;
         }
         if (filesToHash.Count > 0)
         {
@@ -590,6 +610,7 @@ public sealed class ApiSyncService : IDisposable
             ReportDiagnostic(ApiDiagnosticSeverity.Warning, message);
             SetStatus(message);
         }
+        return allSnapshotsPrepared;
     }
 
     public async Task<ApiSyncSummary> SyncNowAsync(CancellationToken cancellationToken = default)
@@ -917,41 +938,61 @@ public sealed class ApiSyncService : IDisposable
         return config.ApplicationId;
     }
 
-    private void AddToQueue(ReplayIngestionSnapshot snapshot) => AddToQueue([snapshot]);
+    private bool AddToQueue(ReplayIngestionSnapshot snapshot) => AddToQueue([snapshot]);
 
-    private void AddToQueue(IEnumerable<ReplayIngestionSnapshot> snapshots)
+    private bool AddToQueue(IEnumerable<ReplayIngestionSnapshot> snapshots)
     {
         if (_queueLoadError != null)
         {
             SetStatus("The local synchronization queue could not be read; replay data remains local.");
-            return;
+            return false;
         }
 
         var added = false;
+        var durable = true;
+        var addedEntries = new List<QueueEntry>();
         lock (_queueGate)
         {
-            foreach (var snapshot in snapshots)
+            try
             {
-                var hash = snapshot.ReplayFile.FileSha256;
-                if (_queue.Any(item =>
-                        item.ReplayFile.FileSha256 == hash
-                        && item.Request?.IdempotencyKey == snapshot.Request.IdempotencyKey))
+                foreach (var snapshot in snapshots)
                 {
-                    continue;
-                }
+                    var hash = snapshot.ReplayFile.FileSha256;
+                    var existing = _queue.FirstOrDefault(item =>
+                            item.ReplayFile.FileSha256 == hash
+                            && item.Request?.IdempotencyKey == snapshot.Request.IdempotencyKey);
+                    if (existing != null)
+                    {
+                        durable &= existing.State == "synchronized"
+                                   || File.Exists(PayloadPath(snapshot.Request.IdempotencyKey));
+                        continue;
+                    }
 
-                _queue.Add(new QueueEntry
+                    SavePayload(snapshot.Request.IdempotencyKey, snapshot.Request.Data
+                        ?? throw new InvalidDataException("The replay snapshot does not contain parser data."));
+                    var entry = new QueueEntry
+                    {
+                        ReplayFile = snapshot.ReplayFile,
+                        Request = snapshot.Request with { Data = null },
+                        State = "pending",
+                        NextAttemptUtc = DateTimeOffset.UtcNow,
+                    };
+                    _queue.Add(entry);
+                    addedEntries.Add(entry);
+                    added = true;
+                }
+                if (added)
                 {
-                    ReplayFile = snapshot.ReplayFile,
-                    Request = snapshot.Request,
-                    State = "pending",
-                    NextAttemptUtc = DateTimeOffset.UtcNow,
-                });
-                added = true;
+                    SaveQueue();
+                }
             }
-            if (added)
+            catch
             {
-                SaveQueue();
+                foreach (var entry in addedEntries)
+                {
+                    _queue.Remove(entry);
+                }
+                throw;
             }
         }
 
@@ -960,6 +1001,7 @@ public sealed class ApiSyncService : IDisposable
             PublishState();
             SignalWorker();
         }
+        return durable;
     }
 
     private async Task WorkerAsync(CancellationToken cancellationToken)
@@ -1140,6 +1182,7 @@ public sealed class ApiSyncService : IDisposable
 
         try
         {
+            entry.Request = entry.Request with { Data = LoadPayload(entry.Request.IdempotencyKey) };
             UpdateProgress("Sending parser snapshot", $"Sending parser data for {entry.ReplayFile.FileName}.", entry.ReplayFile.FileName);
             await IngestReplayAsync(entry, config, cancellationToken).ConfigureAwait(false);
             lock (_queueGate)
@@ -1154,6 +1197,14 @@ public sealed class ApiSyncService : IDisposable
                     current.Request = current.Request with { Data = null };
                     SaveQueue();
                 }
+            }
+            try
+            {
+                DeletePayload(entry.Request.IdempotencyKey);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                ErrorLog.Write($"Delete synchronized replay payload {entry.ReplayFile.FileSha256}", ex);
             }
             ReplaySynchronized?.Invoke(entry.ReplayFile.FileSha256);
             SetStatus($"Synchronized replay {entry.ReplayFile.FileName}.");
@@ -1714,7 +1765,8 @@ public sealed class ApiSyncService : IDisposable
             return new List<QueueEntry>();
         }
 
-        var queue = JsonSerializer.Deserialize<List<QueueEntry>>(File.ReadAllText(_queuePath), Json);
+        using var stream = new FileStream(_queuePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        var queue = JsonSerializer.Deserialize<List<QueueEntry>>(stream, Json);
         return queue ?? throw new InvalidDataException("The API synchronization queue file is empty.");
     }
 
@@ -1722,8 +1774,49 @@ public sealed class ApiSyncService : IDisposable
     {
         Directory.CreateDirectory(Path.GetDirectoryName(_queuePath)!);
         var temporaryPath = _queuePath + ".tmp";
-        File.WriteAllText(temporaryPath, JsonSerializer.Serialize(_queue, Json));
+        using (var stream = new FileStream(temporaryPath, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            JsonSerializer.Serialize(stream, _queue, Json);
+        }
         File.Move(temporaryPath, _queuePath, overwrite: true);
+    }
+
+    private string PayloadPath(string idempotencyKey)
+    {
+        if (idempotencyKey.Length != 64 || !idempotencyKey.All(Uri.IsHexDigit))
+        {
+            throw new InvalidDataException("The synchronization queue contains an invalid idempotency key.");
+        }
+
+        return Path.Combine(_payloadFolder, idempotencyKey + ".json");
+    }
+
+    private void SavePayload(string idempotencyKey, ReplayRawData payload)
+    {
+        Directory.CreateDirectory(_payloadFolder);
+        var path = PayloadPath(idempotencyKey);
+        var temporaryPath = path + ".tmp";
+        using (var stream = new FileStream(temporaryPath, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            JsonSerializer.Serialize(stream, payload, Json);
+        }
+        File.Move(temporaryPath, path, overwrite: true);
+    }
+
+    private ReplayRawData LoadPayload(string idempotencyKey)
+    {
+        using var stream = new FileStream(PayloadPath(idempotencyKey), FileMode.Open, FileAccess.Read, FileShare.Read);
+        return JsonSerializer.Deserialize<ReplayRawData>(stream, Json)
+            ?? throw new InvalidDataException("The persisted replay snapshot is empty.");
+    }
+
+    private void DeletePayload(string idempotencyKey)
+    {
+        var path = PayloadPath(idempotencyKey);
+        if (File.Exists(path))
+        {
+            File.Delete(path);
+        }
     }
 
     private QueueEntry? FindEntry(string fileSha256, string idempotencyKey) =>

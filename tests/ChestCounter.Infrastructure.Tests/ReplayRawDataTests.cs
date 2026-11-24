@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Runtime.CompilerServices;
 using ChestCounter;
 using FortniteReplayReader;
 using FortniteReplayReader.Models;
@@ -15,6 +16,45 @@ namespace ChestCounter.Infrastructure.Tests;
 
 public sealed class ReplayRawDataTests
 {
+    [Fact]
+    public void DisposedReplayAnalyzerReleasesStaticRawProbeHooks()
+    {
+        var analyzer = new ReplayAnalyzer();
+        var filter = RawProbe.Filter;
+        var sink = RawProbe.Sink;
+
+        Assert.NotNull(filter);
+        Assert.NotNull(sink);
+
+        analyzer.Dispose();
+
+        Assert.NotSame(filter, RawProbe.Filter);
+        Assert.NotSame(sink, RawProbe.Sink);
+    }
+
+    [Fact]
+    public void DisposedReplayAnalyzerCanBeCollectedWithoutGenerationRetention()
+    {
+        var analyzer = CreateAnalyzerWeakReference();
+
+        for (var attempt = 0; attempt < 3 && analyzer.IsAlive; attempt++)
+        {
+            GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: false);
+            GC.WaitForPendingFinalizers();
+        }
+
+        Assert.False(analyzer.IsAlive);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference CreateAnalyzerWeakReference()
+    {
+        var analyzer = new ReplayAnalyzer();
+        var reference = new WeakReference(analyzer);
+        analyzer.Dispose();
+        return reference;
+    }
+
     [Fact]
     public void PlayerMovementAndPoiTagsArePreservedByTheReplayBuilder()
     {

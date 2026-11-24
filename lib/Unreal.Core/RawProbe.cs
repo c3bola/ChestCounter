@@ -14,4 +14,16 @@ public static class RawProbe
     public static SinkHandler? Sink { get; set; }
 
     internal static bool Matches(string path) => Sink != null && Filter?.Invoke(path) == true;
+
+    public static void Clear(Func<string, bool>? filter, SinkHandler? sink)
+    {
+        if (ReferenceEquals(Filter, filter))
+        {
+            Filter = null;
+        }
+        if (ReferenceEquals(Sink, sink))
+        {
+            Sink = null;
+        }
+    }
 }

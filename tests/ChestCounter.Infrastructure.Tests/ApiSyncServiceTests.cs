@@ -607,6 +607,107 @@ public sealed class ApiSyncServiceTests
     }
 
     [Fact]
+    public void QueuedMigrationClearsRawDataFromLightweightHistory()
+    {
+        using var folder = new TemporaryFolder();
+        var store = new Store(folder.Path);
+        var hash = new string('c', 64);
+        var data = new TrackerData
+        {
+            Matches =
+            [
+                new MatchRecord
+                {
+                    SessionId = "pending",
+                    ReplayFileSha256 = hash,
+                    RawReplayData = CreateRawSnapshot(),
+                },
+            ],
+        };
+        store.SaveData(data);
+
+        var migrated = store.MigrateQueuedRawReplayData(data, [hash]);
+
+        Assert.Equal(1, migrated);
+        Assert.Null(Assert.Single(store.LoadData().Matches).RawReplayData);
+        Assert.False(Assert.Single(data.Matches).IsSynced);
+    }
+
+    [Fact]
+    public async Task QueueKeepsPayloadOnDiskAndLoadsItOnlyForSynchronization()
+    {
+        using var folder = new TemporaryFolder();
+        var configStore = new ApiIntegrationConfigStore(Path.Combine(folder.Path, "api-config.json"));
+        var queuePath = Path.Combine(folder.Path, "api-sync-queue.json");
+        using var client = new HttpClient(new StubHttpMessageHandler((_, _) =>
+            new HttpResponseMessage(HttpStatusCode.Created)));
+        using var service = CreateService(configStore, queuePath, client);
+        var match = CreateMatch();
+        var replay = WriteReplay(folder.Path);
+        match.ReplayFileSha256 = Convert.ToHexString(
+            SHA256.HashData(File.ReadAllBytes(replay.FullName))).ToLowerInvariant();
+
+        service.QueueReplay(match, replay);
+
+        Assert.Null(match.RawReplayData);
+        using (var queue = JsonDocument.Parse(File.ReadAllText(queuePath)))
+        {
+            var request = Assert.Single(queue.RootElement.EnumerateArray()).GetProperty("request");
+            Assert.False(request.TryGetProperty("data", out var data) && data.ValueKind != JsonValueKind.Null);
+        }
+        var payloadFolder = Path.Combine(folder.Path, "api-sync-payloads");
+        var payload = Assert.Single(Directory.EnumerateFiles(payloadFolder, "*.json"));
+        Assert.Contains("\"parseMode\"", File.ReadAllText(payload), StringComparison.OrdinalIgnoreCase);
+
+        var summary = await service.SyncNowAsync();
+
+        Assert.Equal(1, summary.Synchronized);
+        Assert.Empty(Directory.EnumerateFiles(payloadFolder, "*.json"));
+    }
+
+    [Fact]
+    public void LegacyInlineQueuePayloadIsMigratedToAnIndependentFile()
+    {
+        using var folder = new TemporaryFolder();
+        var configStore = new ApiIntegrationConfigStore(Path.Combine(folder.Path, "api-config.json"));
+        var queuePath = Path.Combine(folder.Path, "api-sync-queue.json");
+        var idempotencyKey = new string('d', 64);
+        var queue = new[]
+        {
+            new
+            {
+                replayFile = new ReplayFileRegistration(
+                    new string('e', 64),
+                    "legacy.replay",
+                    123,
+                    null),
+                request = new ReplayIngestionRequest(
+                    "chestcounter",
+                    idempotencyKey,
+                    null,
+                    CreateRawSnapshot()),
+                state = "pending",
+                attempts = 0,
+                nextAttemptUtc = DateTimeOffset.UtcNow,
+            },
+        };
+        File.WriteAllText(
+            queuePath,
+            JsonSerializer.Serialize(queue, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+        using var client = new HttpClient(new StubHttpMessageHandler((_, _) =>
+            new HttpResponseMessage(HttpStatusCode.Created)));
+        using var service = CreateService(configStore, queuePath, client);
+
+        Assert.Equal(1, service.State.Pending);
+        var migratedQueue = File.ReadAllText(queuePath);
+        Assert.DoesNotContain("\"parseMode\"", migratedQueue, StringComparison.OrdinalIgnoreCase);
+        var payload = Assert.Single(
+            Directory.EnumerateFiles(Path.Combine(folder.Path, "api-sync-payloads"), "*.json"));
+        Assert.Equal(idempotencyKey + ".json", Path.GetFileName(payload));
+        Assert.Contains("\"parseMode\"", File.ReadAllText(payload), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void FailedReplayRegistryPersistsWithoutReplayBytes()
     {
         using var folder = new TemporaryFolder();

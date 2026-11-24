@@ -88,8 +88,11 @@ internal static class Program
         }
 
         LowerPriority();
+        ReplayMemoryDiagnostics.Initialize(dataDir);
+        ReplayMemoryDiagnostics.Record("data.load.before");
         store.LoadPrizeNames();
         var data = store.LoadData();
+        ReplayMemoryDiagnostics.Record("data.load.after");
         var tracker = new Tracker(store, config, data);
         var reanalyzing = tracker.UpgradeIfNeeded();
         if (once)
@@ -135,7 +138,11 @@ internal static class Program
                          match.ReplayFileSha256 != null
                          && match.ReplayFileSha256.Equals(hash, StringComparison.OrdinalIgnoreCase)))
             {
-                match.IsSynced = true;
+                if (!match.IsSynced)
+                {
+                    match.IsSynced = true;
+                    changed = true;
+                }
                 if (match.RawReplayData != null)
                 {
                     match.RawReplayData = null;
@@ -168,7 +175,14 @@ internal static class Program
             {
                 try
                 {
-                    apiSync.QueueHistorical(data, tracker.ReplayFiles());
+                    if (apiSync.QueueHistorical(data, tracker.ReplayFiles()))
+                    {
+                        var queuedSnapshots = store.MigrateQueuedRawReplayData(data, apiSync.PendingPayloadHashes);
+                        if (queuedSnapshots > 0)
+                        {
+                            ReplayMemoryDiagnostics.Record("history.raw-offloaded");
+                        }
+                    }
                 }
                 catch (Exception ex)
                 {

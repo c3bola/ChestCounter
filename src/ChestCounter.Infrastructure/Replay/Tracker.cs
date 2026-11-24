@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using System.Security.Cryptography;
 using System.Runtime.InteropServices;
@@ -354,6 +355,8 @@ public sealed class Tracker : IMonitorTracking
             }
 
             var outcome = Process(file);
+            ReplayMemoryDiagnostics.ReplayProcessed();
+            ReplayMemoryDiagnostics.Record("replay.completed", file.Name);
             outcomes.Add(outcome);
             if (outcome.Match != null) updatedRecords++;
             if (outcome.Error != null) failed++;
@@ -412,6 +415,7 @@ public sealed class Tracker : IMonitorTracking
         {
             ReportWriter.WriteAll(_store, _config, _data);
         }
+        ReplayMemoryDiagnostics.Record("batch.completed");
         return added;
     }
 
@@ -519,6 +523,7 @@ public sealed class Tracker : IMonitorTracking
         _data.Matches.Add(record);
         _data.ProcessedFiles[key] = record.SessionId;
         _store.SaveData(_data);
+        ReplayMemoryDiagnostics.Record("replay.persisted", file.Name);
         if (_liveFile == file.FullName)
         {
             ClearLive(); // the final analysis replaces the live estimate
@@ -543,6 +548,11 @@ public sealed class Tracker : IMonitorTracking
         catch (Exception ex)
         {
             ErrorLog.Write($"Queue replay synchronization ({file.Name})", ex);
+        }
+        if (record.RawReplayData == null)
+        {
+            _store.SaveData(_data);
+            ReplayMemoryDiagnostics.Record("replay.raw-offloaded", file.Name);
         }
         return new Outcome(record, Updated: existing != null, NewPrizeIds: newIds);
     }
@@ -638,21 +648,27 @@ public sealed class Tracker : IMonitorTracking
     /// <summary>Reads the file (even while Fortnite writes it) and parses it on a lowest-priority background thread.</summary>
     private MatchRecord Analyze(FileInfo file, TimeSpan timeout)
     {
+        if (!_analysisGate.Wait(timeout))
+        {
+            throw new TimeoutException(L.T("tracker.analysis_took_too_long"));
+        }
+
         byte[] bytes;
         long fileSize;
         DateTime fileCreatedAtUtc;
-        using (var fs = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+        try
         {
+            using var fs = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             fileSize = fs.Length;
             file.Refresh();
             fileCreatedAtUtc = file.CreationTimeUtc;
             bytes = new byte[fs.Length];
             fs.ReadExactly(bytes);
         }
-
-        if (!_analysisGate.Wait(timeout))
+        catch
         {
-            throw new TimeoutException(L.T("tracker.analysis_took_too_long"));
+            _analysisGate.Release();
+            throw;
         }
 
         MatchRecord? result = null;
@@ -660,10 +676,17 @@ public sealed class Tracker : IMonitorTracking
         var workerBytes = bytes;
         var worker = new Thread(() =>
         {
+            var stopwatch = Stopwatch.StartNew();
             try
             {
+                ReplayMemoryDiagnostics.Record("replay.analysis.before", file.Name);
                 // The replays saved on a PC are those of its player: the replay owner is tracked (one profile per account).
-                result = new ReplayAnalyzer().Analyze(workerBytes.AsMemory(), file.Name, "");
+                using (var analyzer = new ReplayAnalyzer())
+                {
+                    result = analyzer.Analyze(workerBytes.AsMemory(), file.Name, "");
+                }
+                stopwatch.Stop();
+                ReplayMemoryDiagnostics.Record("replay.analysis.after", file.Name, stopwatch.Elapsed);
             }
             catch (Exception e)
             {

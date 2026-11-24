@@ -158,7 +158,8 @@ internal static class ReplayDiagnosticTranscoder
 
         var fileSha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
         using var replayStream = new MemoryStream(bytes, writable: false);
-        var match = new ReplayAnalyzer().Analyze(replayStream, file.Name, "");
+        using var analyzer = new ReplayAnalyzer();
+        var match = analyzer.Analyze(replayStream, file.Name, "");
 
         match.ReplayFile = file.Name;
         match.ReplayFileSha256 = fileSha256;

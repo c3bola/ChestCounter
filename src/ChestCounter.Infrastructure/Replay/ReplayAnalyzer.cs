@@ -17,8 +17,9 @@ namespace ChestCounter;
 /// Reads one .replay file and extracts every container searched by the tracked player,
 /// together with the items that were tossed out of it.
 /// </summary>
-public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
+public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader, IDisposable
 {
+    private static readonly SemaphoreSlim RawProbeGate = new(1, 1);
     private sealed record SearchEvent(
         float Time,
         string ActorKey,
@@ -112,6 +113,9 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
 
     // Treasure prize handler abilities ("GA_TreasureHandler_*"): class netguid -> name.
     private readonly Dictionary<uint, string> _treasureHandlerGuids = new();
+    private readonly Func<string, bool> _rawProbeFilter;
+    private readonly RawProbe.SinkHandler _rawProbeSink;
+    private bool _disposed;
 
     /// <summary>One treasure prize handler granted to a player (one per treasure obtained).</summary>
     private sealed record GrantEvent(float Time, uint PlayerStateActor, int ElementId, string Handler);
@@ -138,8 +142,9 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
                 ? p : "Treasure|Prize|Magpie|Inventory|Quest|Reward|Hunt|PlayerController|PlayerState|Notif", RegexOptions.IgnoreCase);
             NetGuidCache.KeepOnCleanup = true;
         }
-        RawProbe.Filter = path => path.Contains("FortAbilitySystemComponent", StringComparison.Ordinal) || debugFilter?.IsMatch(path) == true;
-        RawProbe.Sink = (channel, group, field, data, bits) =>
+        RawProbeGate.Wait();
+        _rawProbeFilter = path => path.Contains("FortAbilitySystemComponent", StringComparison.Ordinal) || debugFilter?.IsMatch(path) == true;
+        _rawProbeSink = (channel, group, field, data, bits) =>
         {
             if (group.EndsWith("AbilitySystemComponent_ClassNetCache", StringComparison.Ordinal) && _treasureHandlerGuids.Count > 0)
             {
@@ -150,6 +155,35 @@ public sealed class ReplayAnalyzer : FortniteReplayReader.ReplayReader
                 ProbeSink(channel, group, field, data, bits);
             }
         };
+        RawProbe.Filter = _rawProbeFilter;
+        RawProbe.Sink = _rawProbeSink;
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        RawProbe.Clear(_rawProbeFilter, _rawProbeSink);
+        _channelKey.Clear();
+        _channelLabel.Clear();
+        _lastSearcher.Clear();
+        _searched.Clear();
+        _searches.Clear();
+        _tosses.Clear();
+        _equips.Clear();
+        _prizes.Clear();
+        _firstExport.Clear();
+        _prizeChannelsSeen.Clear();
+        _equipChannelsSeen.Clear();
+        _pawnToPlayerState.Clear();
+        _playerStateToPlayerId.Clear();
+        _treasureHandlerGuids.Clear();
+        _grants.Clear();
+        RawProbeGate.Release();
     }
 
     /// <summary>
